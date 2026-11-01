@@ -84,6 +84,9 @@ func convertScenario(s *messages.Scenario) (ParsedScenario, error) {
 	if len(s.Tags) > 0 {
 		return ParsedScenario{}, validationErr("tags aren't supported yet (scenario %q)", name)
 	}
+	if len(s.Examples) > 0 {
+		return ParsedScenario{}, validationErr("Examples aren't supported yet (scenario %q)", name)
+	}
 	if name == "" {
 		return ParsedScenario{}, validationErr("every scenario needs a name after %q", s.Keyword+":")
 	}

@@ -109,49 +109,101 @@ func (s *Store) GetQuestion(ctx context.Context, id string) (Question, error) {
 		return Question{}, notFoundErr("no question %q", id)
 	}
 	q := qs[0]
-	rows, err := s.db.QueryContext(ctx, "SELECT answer, created_at FROM question_rounds WHERE question_id = ? ORDER BY position", id)
+	q.Rounds, err = s.loadRounds(ctx, id)
+	return q, err
+}
+
+// StoryQuestions returns all of a story's questions, open and resolved,
+// oldest first, with their rounds.
+func (s *Store) StoryQuestions(ctx context.Context, storyID string) ([]Question, error) {
+	qs, err := s.loadQuestions(ctx, "WHERE story_id = ? ORDER BY created_at, rowid", storyID)
 	if err != nil {
-		return q, err
+		return nil, err
+	}
+	for i := range qs {
+		if qs[i].Rounds, err = s.loadRounds(ctx, qs[i].ID); err != nil {
+			return nil, err
+		}
+	}
+	return qs, nil
+}
+
+func (s *Store) loadRounds(ctx context.Context, questionID string) ([]Round, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT answer, created_at FROM question_rounds WHERE question_id = ? ORDER BY position", questionID)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	q.Rounds = []Round{}
+	rounds := []Round{}
 	for rows.Next() {
 		var r Round
 		if err := rows.Scan(&r.Answer, &r.CreatedAt); err != nil {
-			return q, err
+			return nil, err
 		}
-		q.Rounds = append(q.Rounds, r)
+		rounds = append(rounds, r)
 	}
-	return q, rows.Err()
+	return rounds, rows.Err()
 }
 
-// ResolveQuestion closes an open question with a note and appends any new
-// scenarios to its story, all or nothing. When test is set, there must be
-// exactly one new scenario, and it arrives closed by that test; the ids of
-// other closed scenarios naming the same test are returned.
-func (s *Store) ResolveQuestion(ctx context.Context, id, note string, parsed []ParsedScenario, test *TestRef) (Question, []Scenario, []string, error) {
+// Resolution is how a question is settled: a note of what was decided and
+// why, and any new scenarios. Test closes the single new scenario. Replaces
+// names a current scenario that the single new scenario replaces; the note
+// is the reason.
+type Resolution struct {
+	Note      string
+	Scenarios []ParsedScenario
+	Test      *TestRef
+	Replaces  string
+}
+
+// ResolveQuestion closes an open question and appends any new scenarios to
+// its story, all or nothing. It returns the ids of other closed scenarios
+// that name the same test, if a test was given.
+func (s *Store) ResolveQuestion(ctx context.Context, id string, r Resolution) (Question, []Scenario, []string, error) {
 	q, err := s.openQuestion(ctx, id)
 	if err != nil {
 		return q, nil, nil, err
 	}
-	if test != nil && len(parsed) != 1 {
-		return q, nil, nil, fmt.Errorf("a test closes exactly one new scenario, got %d", len(parsed))
+	if (r.Test != nil || r.Replaces != "") && len(r.Scenarios) != 1 {
+		return q, nil, nil, fmt.Errorf("a test or a replacement needs exactly one new scenario, got %d", len(r.Scenarios))
+	}
+	at := 0 // where the new scenarios go: the end of the story, unless replacing within it
+	if r.Replaces != "" {
+		old, err := s.changeable(ctx, r.Replaces, q.StoryID)
+		if err != nil {
+			return q, nil, nil, err
+		}
+		at = placeOf(old, q.StoryID)
 	}
 	var added []Scenario
 	var others []string
-	q.Note, q.ResolvedAt, q.Status = note, now(), "resolved"
+	q.Note, q.ResolvedAt, q.Status = r.Note, now(), "resolved"
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "UPDATE questions SET note = ?, resolved_at = ? WHERE id = ?", q.Note, q.ResolvedAt, id); err != nil {
+		res, err := tx.ExecContext(ctx, "UPDATE questions SET note = ?, resolved_at = ? WHERE id = ? AND resolved_at IS NULL", q.Note, q.ResolvedAt, id)
+		if err != nil {
 			return err
 		}
-		var err error
-		if added, err = insertScenarios(ctx, tx, q.StoryID, parsed, id); err != nil || test == nil {
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			if err == nil {
+				err = conflictErr("question %q is already resolved", id)
+			}
 			return err
 		}
-		if others, err = closeScenarioTx(ctx, tx, added[0].ID, *test, q.ResolvedAt); err != nil {
+		if added, err = insertScenarios(ctx, tx, q.StoryID, r.Scenarios, id, at); err != nil {
 			return err
 		}
-		added[0].Status, added[0].TestFile, added[0].Test, added[0].ClosedAt = "closed", test.File, test.Name, q.ResolvedAt
+		if r.Replaces != "" {
+			if err := markChanged(ctx, tx, "replaced_by", r.Replaces, added[0].ID, r.Note, q.ResolvedAt); err != nil {
+				return err
+			}
+		}
+		if r.Test == nil {
+			return nil
+		}
+		if others, err = closeScenarioTx(ctx, tx, added[0].ID, *r.Test, q.ResolvedAt); err != nil {
+			return err
+		}
+		added[0].Status, added[0].TestFile, added[0].Test, added[0].ClosedAt = "closed", r.Test.File, r.Test.Name, q.ResolvedAt
 		return nil
 	})
 	return q, added, others, err
@@ -176,7 +228,7 @@ func (s *Store) Next(ctx context.Context, storyID string) (*Scenario, *Question,
 	if err != nil {
 		return nil, nil, err
 	}
-	scs, err := s.loadScenarios(ctx, "WHERE story_id = ? AND closed_at IS NULL ORDER BY position LIMIT 1", storyID)
+	scs, err := s.loadScenarios(ctx, "WHERE story_id = ? AND closed_at IS NULL AND "+current+" ORDER BY position LIMIT 1", storyID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -263,16 +315,20 @@ func questionAnswer(ctx context.Context, store *Store, args []string, stdin io.R
 }
 
 func questionResolve(ctx context.Context, store *Store, args []string, stdin io.Reader, dir string) (any, error) {
-	id, rest, err := leadingID(args, "usage: aat question resolve <question> --note TEXT [--scenarios GHERKIN [--test-file F --test NAME]]")
+	id, rest, err := leadingID(args, "usage: aat question resolve <question> --note TEXT [--scenarios GHERKIN [--replaces SCENARIO] [--test-file F --test NAME]]")
 	if err != nil {
 		return nil, err
 	}
 	fs := newFlags("question resolve")
 	noteFlag := fs.String("note", "", "why it was settled this way")
 	scenariosFlag := fs.String("scenarios", "", "new Gherkin scenarios, if the answer changed behaviour")
+	replaces := fs.String("replaces", "", "a current scenario that the one new scenario replaces")
 	testFile, testName := testFlags(fs)
 	if err := parseFlags(fs, rest); err != nil {
 		return nil, err
+	}
+	if *replaces != "" && *scenariosFlag == "" {
+		return nil, usageErr("aat question resolve: --replaces needs --scenarios, holding the one scenario that replaces it")
 	}
 	if *noteFlag == "" {
 		return nil, usageErr("aat question resolve: --note is required")
@@ -304,6 +360,9 @@ func questionResolve(ctx context.Context, store *Store, args []string, stdin io.
 			return nil, err
 		}
 	}
+	if *replaces != "" && len(parsed) != 1 {
+		return nil, validationErr("aat question resolve: a scenario is replaced by exactly one new scenario, but --scenarios has %d", len(parsed))
+	}
 	var test *TestRef
 	if withTest {
 		if len(parsed) != 1 {
@@ -315,9 +374,20 @@ func questionResolve(ctx context.Context, store *Store, args []string, stdin io.
 		}
 		test = &ref
 	}
-	q, added, others, err := store.ResolveQuestion(ctx, id, note, parsed, test)
+	q, added, others, err := store.ResolveQuestion(ctx, id, Resolution{Note: note, Scenarios: parsed, Test: test, Replaces: *replaces})
 	if err != nil {
 		return nil, err
+	}
+	var warnings []string
+	if len(others) > 0 {
+		warnings = sameTestWarnings(others)
+	}
+	if test != nil && *replaces != "" {
+		sc, err := store.GetScenario(ctx, added[0].ID)
+		if err != nil {
+			return nil, err
+		}
+		warnings = append(warnings, replacedTestWarnings(dir, sc.Replaces, *test)...)
 	}
 	refs := []map[string]string{}
 	for _, sc := range added {
@@ -331,8 +401,8 @@ func questionResolve(ctx context.Context, store *Store, args []string, stdin io.
 	if test != nil {
 		out["check"] = testCheck
 	}
-	if len(others) > 0 {
-		out["warnings"] = sameTestWarnings(others)
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
 	}
 	return out, nil
 }

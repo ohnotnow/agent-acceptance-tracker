@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var Version = "dev" // overwritten by -ldflags at release
@@ -24,10 +26,16 @@ const usage = `usage: aat [--db path] <command> [flags]
   init                                          set up aat in this project
   feature add --title T [--description D]       add a feature (a long-lived capability)
   feature list                                  list features
+  feature show <feature>                        a feature's current scenarios, and its retired ones
   story add --feature F --title T [--description D]
                                                 add a story (a piece of work) to a feature
   story show <story>                            a story with its feature and scenarios
   scenario add --story S --body B               add Gherkin scenarios to a story
+  scenario show <scenario>                      one scenario, with what it replaced or what replaced it
+  scenario replace <scenario> --story S --reason R --body B
+                                                replace a scenario with one new scenario in a story
+  scenario retire <scenario> --story S --reason R
+                                                retire a scenario as part of a story
   next --story S                                what to do next: a question asked mid-build, else the
                                                 first open scenario or planned check-in, in order
   close <scenario> --test-file F --test NAME    close a scenario with the test that proves it
@@ -36,9 +44,14 @@ const usage = `usage: aat [--db path] <command> [flags]
                                                 it holds the story once next reaches it
   question answer <question> --body B           record one round of the user's answer
   question show <question>                      a question with all its rounds
-  question resolve <question> --note N [--scenarios G [--test-file F --test NAME]]
+  question resolve <question> --note N [--scenarios G [--replaces SC] [--test-file F --test NAME]]
                                                 settle it, adding any new Gherkin scenarios;
-                                                with a test, the one new scenario arrives closed
+                                                the one new scenario can replace a current one,
+                                                and with a test it arrives closed
+  publish [--feature F] [--dir D]               write each feature as a .feature file for Gherkin
+                                                tools (default dir: features/ at the project root)
+  export <story> [--output FILE]                the story as a markdown review (not JSON): each
+                                                scenario with its test, each question with its answers
   version                                       print the version
 
 Text flags (D, B, N, G) take literal text, @path to read a file, or - to read stdin.`
@@ -53,6 +66,10 @@ func Run(ctx context.Context, args []string, dir string, streams Streams) int {
 		}
 		writeJSON(streams.Stderr, map[string]any{"error": map[string]string{"code": ce.Code, "message": ce.Message}})
 		return ce.ExitCode
+	}
+	if text, ok := out.(rawText); ok {
+		io.WriteString(streams.Stdout, string(text))
+		return 0
 	}
 	writeJSON(streams.Stdout, out)
 	return 0
@@ -107,6 +124,8 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 	case "feature list":
 		features, err := store.ListFeatures(ctx)
 		return map[string]any{"features": features}, err
+	case "feature show":
+		return featureShow(ctx, store, rest)
 	case "story add":
 		return storyAdd(ctx, store, rest, stdin)
 	case "story show":
@@ -116,6 +135,15 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 		return store.GetStory(ctx, rest[0])
 	case "scenario add":
 		return scenarioAdd(ctx, store, rest, stdin)
+	case "scenario show":
+		if len(rest) != 1 {
+			return nil, usageErr("usage: aat scenario show <scenario>")
+		}
+		return store.GetScenario(ctx, rest[0])
+	case "scenario replace":
+		return scenarioReplace(ctx, store, rest, stdin)
+	case "scenario retire":
+		return scenarioRetire(ctx, store, rest, stdin)
 	case "next":
 		return next(ctx, store, rest)
 	case "close":
@@ -133,6 +161,10 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 			return nil, usageErr("usage: aat question show <question>")
 		}
 		return store.GetQuestion(ctx, rest[0])
+	case "publish":
+		return publish(ctx, store, rest, dir)
+	case "export":
+		return export(ctx, store, rest, dir)
 	}
 	return nil, usageErr("unknown command %q\n%s", strings.Join(args, " "), usage)
 }
@@ -242,6 +274,12 @@ func featureAdd(ctx context.Context, store *Store, args []string, stdin io.Reade
 	if err != nil {
 		return nil, err
 	}
+	// Check now that publish will be able to write it, because nothing can
+	// change a feature once it is added.
+	probe := Feature{ID: "check", Title: t, Description: d}
+	if err := readsBack(renderFeature(probe, nil), probe, nil); err != nil {
+		return nil, validationErr("aat feature add: this can't go in a .feature file: %v", err)
+	}
 	return store.AddFeature(ctx, t, d)
 }
 
@@ -330,8 +368,13 @@ func closeScenario(ctx context.Context, store *Store, args []string, dir string)
 	if err != nil {
 		return nil, err
 	}
-	if sc.Status == "closed" {
+	switch sc.Status {
+	case "closed":
 		return nil, conflictErr("scenario %q is already closed", id)
+	case "replaced":
+		return nil, conflictErr("scenario %q was replaced by %s; build that one instead", id, sc.ReplacedBy)
+	case "retired":
+		return nil, conflictErr("scenario %q is retired: %s", id, sc.Reason)
 	}
 	test, err := checkTest(dir, *testFile, *testName)
 	if err != nil {
@@ -342,8 +385,12 @@ func closeScenario(ctx context.Context, store *Store, args []string, dir string)
 		return nil, err
 	}
 	out := map[string]any{"id": id, "status": "closed", "test_file": test.File, "test": test.Name, "check": testCheck}
+	var warnings []string
 	if len(others) > 0 {
-		out["warnings"] = sameTestWarnings(others)
+		warnings = sameTestWarnings(others)
+	}
+	if warnings = append(warnings, replacedTestWarnings(dir, sc.Replaces, test)...); len(warnings) > 0 {
+		out["warnings"] = warnings
 	}
 	return out, nil
 }
@@ -367,18 +414,48 @@ func checkTest(dir, testFile, testName string) (TestRef, error) {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(dir, path)
 	}
-	rel, err := filepath.Rel(projectRoot(dir), path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, ok := relativeTo(projectRoot(dir), path)
+	if !ok {
 		return TestRef{}, validationErr("test file %s is outside the project", testFile)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return TestRef{}, validationErr("can't read test file %s: %v", testFile, err)
 	}
-	if !strings.Contains(string(content), name) {
+	if !containsTestName(string(content), name) {
 		return TestRef{}, validationErr("test name %q not found in %s", name, testFile)
 	}
-	return TestRef{File: filepath.ToSlash(rel), Name: name}, nil
+	return TestRef{File: rel, Name: name}, nil
+}
+
+// containsTestName reports whether name appears in content as a whole test
+// name: the character after it must not carry the name on (a letter, digit,
+// underscore or space). So "test_adding_an_item" is not found inside
+// "test_adding_an_item_twice", nor "requires a postcode" inside "requires a
+// postcode only for UK addresses".
+func containsTestName(content, name string) bool {
+	for from := 0; ; {
+		i := strings.Index(content[from:], name)
+		if i < 0 {
+			return false
+		}
+		end := from + i + len(name)
+		r, _ := utf8.DecodeRuneInString(content[end:])
+		if end == len(content) || !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == ' ') {
+			return true
+		}
+		from += i + 1
+	}
+}
+
+// relativeTo returns path relative to root, with forward slashes, and false
+// when path is outside root.
+func relativeTo(root, path string) (string, bool) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 func sameTestWarnings(others []string) []string {

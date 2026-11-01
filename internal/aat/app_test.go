@@ -78,6 +78,7 @@ type storyOut struct {
 		Title string `json:"title"`
 	} `json:"feature"`
 	Scenarios []scenarioOut `json:"scenarios"`
+	Retires   []scenarioOut `json:"retires"`
 }
 
 type scenarioOut struct {
@@ -88,7 +89,21 @@ type scenarioOut struct {
 	TestFile    string `json:"test_file"`
 	Test        string `json:"test"`
 	Position    int    `json:"position"`
-	Lines       []struct {
+	ReplacedBy  string `json:"replaced_by"`
+	RetiredBy   string `json:"retired_by"`
+	Reason      string `json:"reason"`
+	Replaces    *struct {
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		TestFile string `json:"test_file"`
+		Test     string `json:"test"`
+		Reason   string `json:"reason"`
+		Lines    []struct {
+			Keyword string `json:"keyword"`
+			Text    string `json:"text"`
+		} `json:"lines"`
+	} `json:"replaces"`
+	Lines []struct {
 		Keyword string `json:"keyword"`
 		Text    string `json:"text"`
 	} `json:"lines"`

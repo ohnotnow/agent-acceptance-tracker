@@ -133,6 +133,7 @@ func TestClosingAScenarioIsRefused(t *testing.T) {
 		{"when the test file doesn't exist", "tests/Feature/Missing.php", "exports a report as xlsx", "validation"},
 		{"when the test name isn't in the file", "tests/Feature/ExportTest.php", "exports a report as pdf", "validation"},
 		{"when the test file is outside the project", "../elsewhere.php", "exports a report as xlsx", "validation"},
+		{"when the name is only part of a longer test name", "tests/Feature/ExportTest.php", "exports a report", "validation"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

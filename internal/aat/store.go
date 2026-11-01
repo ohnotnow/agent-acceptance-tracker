@@ -33,7 +33,8 @@ type Story struct {
 	Description string     `json:"description,omitempty"`
 	CreatedAt   string     `json:"created_at"`
 	Scenarios   []Scenario `json:"scenarios"`
-	Questions   []Question `json:"questions"` // open ones only, without rounds
+	Questions   []Question `json:"questions"`         // open ones only, without rounds
+	Retires     []Scenario `json:"retires,omitempty"` // scenarios this story retired, whose behaviour and tests it removes
 }
 
 type Scenario struct {
@@ -49,7 +50,27 @@ type Scenario struct {
 	QuestionID  string `json:"question_id,omitempty"` // the question this scenario came out of, if any
 	CreatedAt   string `json:"created_at"`
 	ClosedAt    string `json:"closed_at,omitempty"`
+
+	ReplacedBy string    `json:"replaced_by,omitempty"` // the scenario that replaced this one
+	RetiredBy  string    `json:"retired_by,omitempty"`  // the story that retired this one
+	Reason     string    `json:"reason,omitempty"`      // why it was replaced or retired
+	Replaces   *Replaced `json:"replaces,omitempty"`    // the scenario this one replaced
 }
+
+// Replaced is the scenario a newer one replaced: its rule, the test that
+// proved it (which the builder of the new one has to change or remove), and
+// why it was replaced.
+type Replaced struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Lines    []Line `json:"lines"`
+	TestFile string `json:"test_file,omitempty"`
+	Test     string `json:"test,omitempty"`
+	Reason   string `json:"reason"`
+}
+
+// current is the SQL condition for a scenario that is still part of the spec.
+const current = "replaced_by IS NULL AND retired_by IS NULL"
 
 type migration struct {
 	version     int
@@ -124,6 +145,14 @@ var migrations = []migration{
 		_, err := tx.ExecContext(ctx, `ALTER TABLE questions ADD COLUMN position INTEGER;`)
 		return err
 	}},
+	{5, "replacing and retiring scenarios", func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			ALTER TABLE scenarios ADD COLUMN replaced_by TEXT REFERENCES scenarios(id);
+			ALTER TABLE scenarios ADD COLUMN retired_by TEXT REFERENCES stories(id);
+			ALTER TABLE scenarios ADD COLUMN change_reason TEXT NOT NULL DEFAULT '';
+			ALTER TABLE scenarios ADD COLUMN changed_at TEXT;`)
+		return err
+	}},
 }
 
 func OpenStore(ctx context.Context, path string) (*Store, error) {
@@ -162,6 +191,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	var current int
 	if err := s.db.QueryRowContext(ctx, "SELECT version FROM schema_version WHERE id = 1").Scan(&current); err != nil {
 		return err
+	}
+	// An older aat would misread a newer schema (for example, handing out
+	// retired scenarios), so it refuses instead.
+	if latest := migrations[len(migrations)-1].version; current > latest {
+		return fmt.Errorf("this database is at schema version %d, but this aat only knows up to %d; upgrade aat", current, latest)
 	}
 	for _, m := range migrations {
 		if m.version <= current {
@@ -223,13 +257,36 @@ func (s *Store) ListFeatures(ctx context.Context) ([]Feature, error) {
 	return features, rows.Err()
 }
 
-func (s *Store) featureRef(ctx context.Context, id string) (FeatureRef, error) {
-	ref := FeatureRef{ID: id}
-	err := s.db.QueryRowContext(ctx, "SELECT title FROM features WHERE id = ?", id).Scan(&ref.Title)
+func (s *Store) GetFeature(ctx context.Context, id string) (Feature, error) {
+	f := Feature{ID: id}
+	err := s.db.QueryRowContext(ctx, "SELECT title, description, created_at FROM features WHERE id = ?", id).
+		Scan(&f.Title, &f.Description, &f.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ref, notFoundErr("no feature %q", id)
+		return f, notFoundErr("no feature %q", id)
 	}
-	return ref, err
+	return f, err
+}
+
+func (s *Store) featureRef(ctx context.Context, id string) (FeatureRef, error) {
+	f, err := s.GetFeature(ctx, id)
+	return FeatureRef{ID: f.ID, Title: f.Title}, err
+}
+
+// featureOrder selects a feature's scenarios in the order they read: its
+// stories in the order they were added, each story's scenarios in order.
+const featureOrder = `story_id IN (SELECT id FROM stories WHERE feature_id = ?)
+	ORDER BY (SELECT created_at FROM stories WHERE stories.id = scenarios.story_id),
+		(SELECT rowid FROM stories WHERE stories.id = scenarios.story_id), position`
+
+// CurrentScenarios returns the scenarios that make up a feature's spec now,
+// leaving out replaced and retired ones.
+func (s *Store) CurrentScenarios(ctx context.Context, featureID string) ([]Scenario, error) {
+	return s.loadScenarios(ctx, "WHERE "+current+" AND "+featureOrder, featureID)
+}
+
+// RetiredScenarios returns a feature's retired scenarios, in the same order.
+func (s *Store) RetiredScenarios(ctx context.Context, featureID string) ([]Scenario, error) {
+	return s.loadScenarios(ctx, "WHERE retired_by IS NOT NULL AND "+featureOrder, featureID)
 }
 
 func (s *Store) AddStory(ctx context.Context, featureID, title, description string) (Story, error) {
@@ -263,6 +320,9 @@ func (s *Store) GetStory(ctx context.Context, id string) (Story, error) {
 	if st.Scenarios, err = s.loadScenarios(ctx, "WHERE story_id = ? ORDER BY position", id); err != nil {
 		return st, err
 	}
+	if st.Retires, err = s.loadScenarios(ctx, "WHERE retired_by = ? ORDER BY changed_at, rowid", id); err != nil {
+		return st, err
+	}
 	st.Questions, err = s.loadQuestions(ctx, "WHERE story_id = ? AND resolved_at IS NULL ORDER BY created_at, rowid", id)
 	return st, err
 }
@@ -284,17 +344,23 @@ func (s *Store) AddScenarios(ctx context.Context, storyID string, parsed []Parse
 	var added []Scenario
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		added, err = insertScenarios(ctx, tx, storyID, parsed, "")
+		added, err = insertScenarios(ctx, tx, storyID, parsed, "", 0)
 		return err
 	})
 	return added, err
 }
 
-// insertScenarios appends scenarios to the end of a story inside tx.
+// insertScenarios adds scenarios to a story inside tx: at the end when at is
+// 0, otherwise at that place in the story's order, moving later items along.
 // questionID, when set, records the question they came out of.
-func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []ParsedScenario, questionID string) ([]Scenario, error) {
-	pos, err := nextPosition(ctx, tx, storyID)
-	if err != nil {
+func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []ParsedScenario, questionID string, at int) ([]Scenario, error) {
+	pos := at
+	if at == 0 {
+		var err error
+		if pos, err = nextPosition(ctx, tx, storyID); err != nil {
+			return nil, err
+		}
+	} else if err := makeRoom(ctx, tx, storyID, at, len(parsed)); err != nil {
 		return nil, err
 	}
 	var qid any
@@ -323,6 +389,20 @@ func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []P
 		added = append(added, sc)
 	}
 	return added, nil
+}
+
+// makeRoom moves everything at or after position at in a story's order along
+// by n. Scenarios go via negative numbers, so no two of them ever share a
+// position on the way.
+func makeRoom(ctx context.Context, tx *sql.Tx, storyID string, at, n int) error {
+	if _, err := tx.ExecContext(ctx, "UPDATE scenarios SET position = -(position + ?) WHERE story_id = ? AND position >= ?", n, storyID, at); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE scenarios SET position = -position WHERE story_id = ? AND position < 0", storyID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE questions SET position = position + ? WHERE story_id = ? AND position >= ?", n, storyID, at)
+	return err
 }
 
 // nextPosition is the next free place in a story's order, which its
@@ -371,20 +451,20 @@ func (s *Store) CloseScenario(ctx context.Context, id string, test TestRef) ([]s
 func closeScenarioTx(ctx context.Context, tx *sql.Tx, id string, test TestRef, at string) ([]string, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE scenarios SET test_file = ?, test_name = ?, closed_at = ?
-		WHERE id = ? AND closed_at IS NULL`, test.File, test.Name, at, id)
+		WHERE id = ? AND closed_at IS NULL AND `+current, test.File, test.Name, at, id)
 	if err != nil {
 		return nil, err
 	}
 	if n, err := res.RowsAffected(); err != nil || n == 0 {
 		if err == nil {
-			err = conflictErr("scenario %q is already closed", id)
+			err = conflictErr("scenario %q is already closed, replaced or retired", id)
 		}
 		return nil, err
 	}
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id FROM scenarios
-		WHERE test_file = ? AND test_name = ? AND closed_at IS NOT NULL AND id != ?
+		WHERE test_file = ? AND test_name = ? AND closed_at IS NOT NULL AND id != ? AND `+current+`
 		ORDER BY closed_at, rowid`, test.File, test.Name, id)
 	if err != nil {
 		return nil, err
@@ -401,23 +481,33 @@ func closeScenarioTx(ctx context.Context, tx *sql.Tx, id string, test TestRef, a
 	return others, rows.Err()
 }
 
-// loadScenarios runs a scenario query with the given WHERE/ORDER clause and loads each one's lines.
+// loadScenarios runs a scenario query with the given WHERE/ORDER clause and
+// loads each one's lines, and what it replaced, if anything.
 func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) ([]Scenario, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, story_id, position, title, description, test_file, test_name, COALESCE(question_id, ''), created_at, COALESCE(closed_at, '')
+		SELECT id, story_id, position, title, description, test_file, test_name, COALESCE(question_id, ''),
+			created_at, COALESCE(closed_at, ''), COALESCE(replaced_by, ''), COALESCE(retired_by, ''), change_reason
 		FROM scenarios `+clause, args...)
 	if err != nil {
 		return nil, err
 	}
 	scs := []Scenario{}
 	for rows.Next() {
-		sc := Scenario{Lines: []Line{}, Status: "open"}
-		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Position, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.QuestionID, &sc.CreatedAt, &sc.ClosedAt); err != nil {
+		var sc Scenario
+		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Position, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.QuestionID,
+			&sc.CreatedAt, &sc.ClosedAt, &sc.ReplacedBy, &sc.RetiredBy, &sc.Reason); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if sc.ClosedAt != "" {
+		switch {
+		case sc.ReplacedBy != "":
+			sc.Status = "replaced"
+		case sc.RetiredBy != "":
+			sc.Status = "retired"
+		case sc.ClosedAt != "":
 			sc.Status = "closed"
+		default:
+			sc.Status = "open"
 		}
 		scs = append(scs, sc)
 	}
@@ -426,22 +516,58 @@ func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) (
 		return nil, err
 	}
 	for i := range scs {
-		lrows, err := s.db.QueryContext(ctx, "SELECT keyword, text FROM scenario_lines WHERE scenario_id = ? ORDER BY position", scs[i].ID)
-		if err != nil {
+		if scs[i].Lines, err = s.loadLines(ctx, scs[i].ID); err != nil {
 			return nil, err
 		}
-		for lrows.Next() {
-			var l Line
-			if err := lrows.Scan(&l.Keyword, &l.Text); err != nil {
-				lrows.Close()
-				return nil, err
-			}
-			scs[i].Lines = append(scs[i].Lines, l)
-		}
-		lrows.Close()
-		if err := lrows.Err(); err != nil {
+		if scs[i].Replaces, err = s.loadReplaced(ctx, scs[i].ID); err != nil {
 			return nil, err
 		}
 	}
 	return scs, nil
+}
+
+func (s *Store) loadLines(ctx context.Context, scenarioID string) ([]Line, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT keyword, text FROM scenario_lines WHERE scenario_id = ? ORDER BY position", scenarioID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	lines := []Line{}
+	for rows.Next() {
+		var l Line
+		if err := rows.Scan(&l.Keyword, &l.Text); err != nil {
+			return nil, err
+		}
+		lines = append(lines, l)
+	}
+	return lines, rows.Err()
+}
+
+// loadReplaced returns the scenario that the given one replaced, or nil.
+func (s *Store) loadReplaced(ctx context.Context, scenarioID string) (*Replaced, error) {
+	r := Replaced{}
+	err := s.db.QueryRowContext(ctx, "SELECT id, title, test_file, test_name, change_reason FROM scenarios WHERE replaced_by = ?", scenarioID).
+		Scan(&r.ID, &r.Title, &r.TestFile, &r.Test, &r.Reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if r.Lines, err = s.loadLines(ctx, r.ID); err != nil {
+		return nil, err
+	}
+	// If the replaced scenario was never built, it has no test. The test to
+	// change is then the one for the newest built rule further back.
+	for at := r.ID; r.Test == ""; {
+		err := s.db.QueryRowContext(ctx, "SELECT id, test_file, test_name FROM scenarios WHERE replaced_by = ?", at).
+			Scan(&at, &r.TestFile, &r.Test)
+		if errors.Is(err, sql.ErrNoRows) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &r, nil
 }

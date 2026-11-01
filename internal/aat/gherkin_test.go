@@ -37,18 +37,19 @@ func TestParseScenarios(t *testing.T) {
 	})
 
 	rejects := map[string]string{
-		"empty input":             "   \n",
-		"a Feature line":          "Feature: Exports\n  Scenario: x\n    Given y\n",
-		"text before a scenario":  "Some notes\nScenario: x\n  Given y\n",
-		"Background":              "Background:\n  Given a user\nScenario: x\n  Given y\n",
-		"Rule":                    "Rule: one\n  Scenario: x\n    Given y\n",
-		"Scenario Outline":        "Scenario Outline: x\n  Given <a>\n  Examples:\n    | a |\n    | 1 |\n",
-		"tags":                    "@slow\nScenario: x\n  Given y\n",
-		"a data table":            "Scenario: x\n  Given rows\n    | a |\n    | 1 |\n",
-		"a doc string":            "Scenario: x\n  Given text\n    \"\"\"\n    hello\n    \"\"\"\n",
-		"the star keyword":        "Scenario: x\n  * y\n",
-		"an empty scenario":       "Scenario: x\n",
-		"a scenario with no name": "Scenario:\n  Given y\n",
+		"empty input":               "   \n",
+		"a Feature line":            "Feature: Exports\n  Scenario: x\n    Given y\n",
+		"text before a scenario":    "Some notes\nScenario: x\n  Given y\n",
+		"Background":                "Background:\n  Given a user\nScenario: x\n  Given y\n",
+		"Rule":                      "Rule: one\n  Scenario: x\n    Given y\n",
+		"Scenario Outline":          "Scenario Outline: x\n  Given <a>\n  Examples:\n    | a |\n    | 1 |\n",
+		"Examples under a Scenario": "Scenario: x\n  Given a <a>\n  Examples:\n    | a |\n    | 1 |\n",
+		"tags":                      "@slow\nScenario: x\n  Given y\n",
+		"a data table":              "Scenario: x\n  Given rows\n    | a |\n    | 1 |\n",
+		"a doc string":              "Scenario: x\n  Given text\n    \"\"\"\n    hello\n    \"\"\"\n",
+		"the star keyword":          "Scenario: x\n  * y\n",
+		"an empty scenario":         "Scenario: x\n",
+		"a scenario with no name":   "Scenario:\n  Given y\n",
 	}
 	for name, body := range rejects {
 		t.Run("rejects "+name, func(t *testing.T) {
