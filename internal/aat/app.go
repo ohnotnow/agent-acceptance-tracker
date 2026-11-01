@@ -28,13 +28,17 @@ const usage = `usage: aat [--db path] <command> [flags]
                                                 add a story (a piece of work) to a feature
   story show <story>                            a story with its feature and scenarios
   scenario add --story S --body B               add Gherkin scenarios to a story
-  next --story S                                the story's oldest open question, else its next open scenario
+  next --story S                                what to do next: a question asked mid-build, else the
+                                                first open scenario or planned check-in, in order
   close <scenario> --test-file F --test NAME    close a scenario with the test that proves it
   question ask --story S --body B               raise a question; it holds the story until resolved
+  question plan --story S --body B              plan a check-in after everything in the story so far;
+                                                it holds the story once next reaches it
   question answer <question> --body B           record one round of the user's answer
   question show <question>                      a question with all its rounds
-  question resolve <question> --note N [--scenarios G]
-                                                settle it, adding any new Gherkin scenarios
+  question resolve <question> --note N [--scenarios G [--test-file F --test NAME]]
+                                                settle it, adding any new Gherkin scenarios;
+                                                with a test, the one new scenario arrives closed
   version                                       print the version
 
 Text flags (D, B, N, G) take literal text, @path to read a file, or - to read stdin.`
@@ -117,11 +121,13 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 	case "close":
 		return closeScenario(ctx, store, rest, dir)
 	case "question ask":
-		return questionAsk(ctx, store, rest, stdin)
+		return questionAdd(ctx, "question ask", rest, stdin, store.AskQuestion)
+	case "question plan":
+		return questionAdd(ctx, "question plan", rest, stdin, store.PlanQuestion)
 	case "question answer":
 		return questionAnswer(ctx, store, rest, stdin)
 	case "question resolve":
-		return questionResolve(ctx, store, rest, stdin)
+		return questionResolve(ctx, store, rest, stdin, dir)
 	case "question show":
 		if len(rest) != 1 {
 			return nil, usageErr("usage: aat question show <question>")
@@ -305,25 +311,20 @@ func next(ctx context.Context, store *Store, args []string) (any, error) {
 	return map[string]any{"scenario": sc}, nil
 }
 
-// closeScenario closes a scenario with the test that proves it. The check
-// is deliberately light: the file must exist inside the project and contain
-// the test name as text. It catches typos and invented names; running the
-// test is the reviewer's job.
+// closeScenario closes a scenario with the test that proves it.
 func closeScenario(ctx context.Context, store *Store, args []string, dir string) (any, error) {
 	id, rest, err := leadingID(args, "usage: aat close <scenario> --test-file F --test NAME")
 	if err != nil {
 		return nil, err
 	}
 	fs := newFlags("close")
-	testFile := fs.String("test-file", "", "test file path")
-	testName := fs.String("test", "", "test name")
+	testFile, testName := testFlags(fs)
 	if err := parseFlags(fs, rest); err != nil {
 		return nil, err
 	}
 	if *testFile == "" || strings.TrimSpace(*testName) == "" {
 		return nil, usageErr("aat close: --test-file and --test are both required")
 	}
-	name := strings.TrimSpace(*testName)
 
 	sc, err := store.GetScenario(ctx, id)
 	if err != nil {
@@ -332,38 +333,54 @@ func closeScenario(ctx context.Context, store *Store, args []string, dir string)
 	if sc.Status == "closed" {
 		return nil, conflictErr("scenario %q is already closed", id)
 	}
-
-	root := projectRoot(dir)
-	path := *testFile
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(dir, path)
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, validationErr("test file %s is outside the project", *testFile)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, validationErr("can't read test file %s: %v", *testFile, err)
-	}
-	if !strings.Contains(string(content), name) {
-		return nil, validationErr("test name %q not found in %s", name, *testFile)
-	}
-
-	rel = filepath.ToSlash(rel)
-	others, err := store.CloseScenario(ctx, id, rel, name)
+	test, err := checkTest(dir, *testFile, *testName)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{
-		"id":        id,
-		"status":    "closed",
-		"test_file": rel,
-		"test":      name,
-		"check":     "found the test name in the file",
+	others, err := store.CloseScenario(ctx, id, test)
+	if err != nil {
+		return nil, err
 	}
+	out := map[string]any{"id": id, "status": "closed", "test_file": test.File, "test": test.Name, "check": testCheck}
 	if len(others) > 0 {
-		out["warnings"] = []string{fmt.Sprintf("the same test already closes scenario %s; check it really proves both", strings.Join(others, ", "))}
+		out["warnings"] = sameTestWarnings(others)
 	}
 	return out, nil
+}
+
+// testFlags adds the two flags that name the test proving a scenario.
+func testFlags(fs *flag.FlagSet) (file, name *string) {
+	return fs.String("test-file", "", "test file path"), fs.String("test", "", "test name")
+}
+
+// testCheck says what aat checked about a test. It never says "verified":
+// running the test is the reviewer's job.
+const testCheck = "found the test name in the file"
+
+// checkTest is the deliberately light check behind closing a scenario: the
+// test file must exist inside the project and contain the test name as text.
+// It catches typos and invented names. The returned file path is relative
+// to the project root.
+func checkTest(dir, testFile, testName string) (TestRef, error) {
+	name := strings.TrimSpace(testName)
+	path := testFile
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	rel, err := filepath.Rel(projectRoot(dir), path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return TestRef{}, validationErr("test file %s is outside the project", testFile)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return TestRef{}, validationErr("can't read test file %s: %v", testFile, err)
+	}
+	if !strings.Contains(string(content), name) {
+		return TestRef{}, validationErr("test name %q not found in %s", name, testFile)
+	}
+	return TestRef{File: filepath.ToSlash(rel), Name: name}, nil
+}
+
+func sameTestWarnings(others []string) []string {
+	return []string{fmt.Sprintf("the same test already closes scenario %s; check it really proves both", strings.Join(others, ", "))}
 }

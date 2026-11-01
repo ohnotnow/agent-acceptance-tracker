@@ -42,6 +42,7 @@ type Scenario struct {
 	Title       string `json:"title"`
 	Description string `json:"description,omitempty"`
 	Lines       []Line `json:"lines"`
+	Position    int    `json:"position"` // place in the story's order, shared with planned questions
 	Status      string `json:"status"`
 	TestFile    string `json:"test_file,omitempty"` // relative to the project root
 	Test        string `json:"test,omitempty"`
@@ -116,6 +117,11 @@ var migrations = []migration{
 				PRIMARY KEY (question_id, position)
 			);
 			ALTER TABLE scenarios ADD COLUMN question_id TEXT REFERENCES questions(id);`)
+		return err
+	}},
+	{4, "planned questions take a place in the story's order", func(ctx context.Context, tx *sql.Tx) error {
+		// NULL for a question asked mid-build; otherwise a position shared with the story's scenarios.
+		_, err := tx.ExecContext(ctx, `ALTER TABLE questions ADD COLUMN position INTEGER;`)
 		return err
 	}},
 }
@@ -287,8 +293,8 @@ func (s *Store) AddScenarios(ctx context.Context, storyID string, parsed []Parse
 // insertScenarios appends scenarios to the end of a story inside tx.
 // questionID, when set, records the question they came out of.
 func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []ParsedScenario, questionID string) ([]Scenario, error) {
-	var pos int
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(position), 0) FROM scenarios WHERE story_id = ?", storyID).Scan(&pos); err != nil {
+	pos, err := nextPosition(ctx, tx, storyID)
+	if err != nil {
 		return nil, err
 	}
 	var qid any
@@ -301,11 +307,11 @@ func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []P
 		if err != nil {
 			return nil, err
 		}
-		pos++
 		sc := Scenario{ID: id, StoryID: storyID, Title: p.Title, Description: p.Description, Lines: p.Lines,
-			Status: "open", QuestionID: questionID, CreatedAt: now()}
+			Position: pos, Status: "open", QuestionID: questionID, CreatedAt: now()}
+		pos++
 		if _, err := tx.ExecContext(ctx, "INSERT INTO scenarios (id, story_id, position, title, description, question_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			sc.ID, storyID, pos, sc.Title, sc.Description, qid, sc.CreatedAt); err != nil {
+			sc.ID, storyID, sc.Position, sc.Title, sc.Description, qid, sc.CreatedAt); err != nil {
 			return nil, err
 		}
 		for i, l := range p.Lines {
@@ -319,6 +325,18 @@ func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []P
 	return added, nil
 }
 
+// nextPosition is the next free place in a story's order, which its
+// scenarios and planned questions share.
+func nextPosition(ctx context.Context, tx *sql.Tx, storyID string) (int, error) {
+	var pos int
+	err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(position), 0) FROM (
+			SELECT position FROM scenarios WHERE story_id = ?
+			UNION ALL
+			SELECT position FROM questions WHERE story_id = ? AND position IS NOT NULL)`, storyID, storyID).Scan(&pos)
+	return pos + 1, err
+}
+
 func (s *Store) GetScenario(ctx context.Context, id string) (Scenario, error) {
 	scs, err := s.loadScenarios(ctx, "WHERE id = ?", id)
 	if err != nil {
@@ -330,12 +348,30 @@ func (s *Store) GetScenario(ctx context.Context, id string) (Scenario, error) {
 	return scs[0], nil
 }
 
+// TestRef is the test that proves a scenario: a file relative to the project
+// root, and the name of a test in that file.
+type TestRef struct {
+	File string
+	Name string
+}
+
 // CloseScenario records the test that proves an open scenario. It also
 // returns the ids of other closed scenarios that name the same test.
-func (s *Store) CloseScenario(ctx context.Context, id, testFile, testName string) ([]string, error) {
-	res, err := s.db.ExecContext(ctx, `
+func (s *Store) CloseScenario(ctx context.Context, id string, test TestRef) ([]string, error) {
+	var others []string
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		others, err = closeScenarioTx(ctx, tx, id, test, now())
+		return err
+	})
+	return others, err
+}
+
+// closeScenarioTx is CloseScenario inside tx, closing the scenario at the given time.
+func closeScenarioTx(ctx context.Context, tx *sql.Tx, id string, test TestRef, at string) ([]string, error) {
+	res, err := tx.ExecContext(ctx, `
 		UPDATE scenarios SET test_file = ?, test_name = ?, closed_at = ?
-		WHERE id = ? AND closed_at IS NULL`, testFile, testName, now(), id)
+		WHERE id = ? AND closed_at IS NULL`, test.File, test.Name, at, id)
 	if err != nil {
 		return nil, err
 	}
@@ -346,10 +382,10 @@ func (s *Store) CloseScenario(ctx context.Context, id, testFile, testName string
 		return nil, err
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, `
 		SELECT id FROM scenarios
 		WHERE test_file = ? AND test_name = ? AND closed_at IS NOT NULL AND id != ?
-		ORDER BY closed_at, rowid`, testFile, testName, id)
+		ORDER BY closed_at, rowid`, test.File, test.Name, id)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +404,7 @@ func (s *Store) CloseScenario(ctx context.Context, id, testFile, testName string
 // loadScenarios runs a scenario query with the given WHERE/ORDER clause and loads each one's lines.
 func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) ([]Scenario, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, story_id, title, description, test_file, test_name, COALESCE(question_id, ''), created_at, COALESCE(closed_at, '')
+		SELECT id, story_id, position, title, description, test_file, test_name, COALESCE(question_id, ''), created_at, COALESCE(closed_at, '')
 		FROM scenarios `+clause, args...)
 	if err != nil {
 		return nil, err
@@ -376,7 +412,7 @@ func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) (
 	scs := []Scenario{}
 	for rows.Next() {
 		sc := Scenario{Lines: []Line{}, Status: "open"}
-		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.QuestionID, &sc.CreatedAt, &sc.ClosedAt); err != nil {
+		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Position, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.QuestionID, &sc.CreatedAt, &sc.ClosedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}

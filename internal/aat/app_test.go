@@ -84,6 +84,10 @@ type scenarioOut struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	Status      string `json:"status"`
+	TestFile    string `json:"test_file"`
+	Test        string `json:"test"`
+	Position    int    `json:"position"`
 	Lines       []struct {
 		Keyword string `json:"keyword"`
 		Text    string `json:"text"`
