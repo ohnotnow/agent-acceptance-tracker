@@ -33,6 +33,7 @@ type Story struct {
 	Description string     `json:"description,omitempty"`
 	CreatedAt   string     `json:"created_at"`
 	Scenarios   []Scenario `json:"scenarios"`
+	Questions   []Question `json:"questions"` // open ones only, without rounds
 }
 
 type Scenario struct {
@@ -44,6 +45,7 @@ type Scenario struct {
 	Status      string `json:"status"`
 	TestFile    string `json:"test_file,omitempty"` // relative to the project root
 	Test        string `json:"test,omitempty"`
+	QuestionID  string `json:"question_id,omitempty"` // the question this scenario came out of, if any
 	CreatedAt   string `json:"created_at"`
 	ClosedAt    string `json:"closed_at,omitempty"`
 }
@@ -94,6 +96,26 @@ var migrations = []migration{
 			ALTER TABLE scenarios ADD COLUMN test_file TEXT NOT NULL DEFAULT '';
 			ALTER TABLE scenarios ADD COLUMN test_name TEXT NOT NULL DEFAULT '';
 			ALTER TABLE scenarios ADD COLUMN closed_at TEXT;`)
+		return err
+	}},
+	{3, "questions and their rounds", func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			CREATE TABLE questions (
+				id          TEXT PRIMARY KEY,
+				story_id    TEXT NOT NULL REFERENCES stories(id),
+				text        TEXT NOT NULL,
+				note        TEXT NOT NULL DEFAULT '',
+				created_at  TEXT NOT NULL,
+				resolved_at TEXT
+			);
+			CREATE TABLE question_rounds (
+				question_id TEXT NOT NULL REFERENCES questions(id),
+				position    INTEGER NOT NULL,
+				answer      TEXT NOT NULL,
+				created_at  TEXT NOT NULL,
+				PRIMARY KEY (question_id, position)
+			);
+			ALTER TABLE scenarios ADD COLUMN question_id TEXT REFERENCES questions(id);`)
 		return err
 	}},
 }
@@ -213,7 +235,7 @@ func (s *Store) AddStory(ctx context.Context, featureID, title, description stri
 	if err != nil {
 		return Story{}, err
 	}
-	st := Story{ID: id, Feature: ref, Title: title, Description: description, CreatedAt: now(), Scenarios: []Scenario{}}
+	st := Story{ID: id, Feature: ref, Title: title, Description: description, CreatedAt: now(), Scenarios: []Scenario{}, Questions: []Question{}}
 	_, err = s.db.ExecContext(ctx, "INSERT INTO stories (id, feature_id, title, description, created_at) VALUES (?, ?, ?, ?, ?)",
 		st.ID, featureID, st.Title, st.Description, st.CreatedAt)
 	return st, err
@@ -232,7 +254,10 @@ func (s *Store) GetStory(ctx context.Context, id string) (Story, error) {
 	if err != nil {
 		return st, err
 	}
-	st.Scenarios, err = s.loadScenarios(ctx, "WHERE story_id = ? ORDER BY position", id)
+	if st.Scenarios, err = s.loadScenarios(ctx, "WHERE story_id = ? ORDER BY position", id); err != nil {
+		return st, err
+	}
+	st.Questions, err = s.loadQuestions(ctx, "WHERE story_id = ? AND resolved_at IS NULL ORDER BY created_at, rowid", id)
 	return st, err
 }
 
@@ -252,44 +277,46 @@ func (s *Store) AddScenarios(ctx context.Context, storyID string, parsed []Parse
 	}
 	var added []Scenario
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		var pos int
-		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(position), 0) FROM scenarios WHERE story_id = ?", storyID).Scan(&pos); err != nil {
-			return err
-		}
-		for _, p := range parsed {
-			id, err := newID(scenarioIDLen)
-			if err != nil {
-				return err
-			}
-			pos++
-			sc := Scenario{ID: id, StoryID: storyID, Title: p.Title, Description: p.Description, Lines: p.Lines, Status: "open", CreatedAt: now()}
-			if _, err := tx.ExecContext(ctx, "INSERT INTO scenarios (id, story_id, position, title, description, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-				sc.ID, storyID, pos, sc.Title, sc.Description, sc.CreatedAt); err != nil {
-				return err
-			}
-			for i, l := range p.Lines {
-				if _, err := tx.ExecContext(ctx, "INSERT INTO scenario_lines (scenario_id, position, keyword, text) VALUES (?, ?, ?, ?)",
-					sc.ID, i+1, l.Keyword, l.Text); err != nil {
-					return err
-				}
-			}
-			added = append(added, sc)
-		}
-		return nil
+		var err error
+		added, err = insertScenarios(ctx, tx, storyID, parsed, "")
+		return err
 	})
 	return added, err
 }
 
-// NextScenario returns the story's first open scenario, or nil when there is none.
-func (s *Store) NextScenario(ctx context.Context, storyID string) (*Scenario, error) {
-	if err := s.requireStory(ctx, storyID); err != nil {
+// insertScenarios appends scenarios to the end of a story inside tx.
+// questionID, when set, records the question they came out of.
+func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []ParsedScenario, questionID string) ([]Scenario, error) {
+	var pos int
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(position), 0) FROM scenarios WHERE story_id = ?", storyID).Scan(&pos); err != nil {
 		return nil, err
 	}
-	scs, err := s.loadScenarios(ctx, "WHERE story_id = ? AND closed_at IS NULL ORDER BY position LIMIT 1", storyID)
-	if err != nil || len(scs) == 0 {
-		return nil, err
+	var qid any
+	if questionID != "" {
+		qid = questionID
 	}
-	return &scs[0], nil
+	var added []Scenario
+	for _, p := range parsed {
+		id, err := newID(scenarioIDLen)
+		if err != nil {
+			return nil, err
+		}
+		pos++
+		sc := Scenario{ID: id, StoryID: storyID, Title: p.Title, Description: p.Description, Lines: p.Lines,
+			Status: "open", QuestionID: questionID, CreatedAt: now()}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO scenarios (id, story_id, position, title, description, question_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			sc.ID, storyID, pos, sc.Title, sc.Description, qid, sc.CreatedAt); err != nil {
+			return nil, err
+		}
+		for i, l := range p.Lines {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO scenario_lines (scenario_id, position, keyword, text) VALUES (?, ?, ?, ?)",
+				sc.ID, i+1, l.Keyword, l.Text); err != nil {
+				return nil, err
+			}
+		}
+		added = append(added, sc)
+	}
+	return added, nil
 }
 
 func (s *Store) GetScenario(ctx context.Context, id string) (Scenario, error) {
@@ -341,7 +368,7 @@ func (s *Store) CloseScenario(ctx context.Context, id, testFile, testName string
 // loadScenarios runs a scenario query with the given WHERE/ORDER clause and loads each one's lines.
 func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) ([]Scenario, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, story_id, title, description, test_file, test_name, created_at, COALESCE(closed_at, '')
+		SELECT id, story_id, title, description, test_file, test_name, COALESCE(question_id, ''), created_at, COALESCE(closed_at, '')
 		FROM scenarios `+clause, args...)
 	if err != nil {
 		return nil, err
@@ -349,7 +376,7 @@ func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) (
 	scs := []Scenario{}
 	for rows.Next() {
 		sc := Scenario{Lines: []Line{}, Status: "open"}
-		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.CreatedAt, &sc.ClosedAt); err != nil {
+		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.QuestionID, &sc.CreatedAt, &sc.ClosedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}

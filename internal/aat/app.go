@@ -28,11 +28,16 @@ const usage = `usage: aat [--db path] <command> [flags]
                                                 add a story (a piece of work) to a feature
   story show <story>                            a story with its feature and scenarios
   scenario add --story S --body B               add Gherkin scenarios to a story
-  next --story S                                the story's next open scenario
+  next --story S                                the story's oldest open question, else its next open scenario
   close <scenario> --test-file F --test NAME    close a scenario with the test that proves it
+  question ask --story S --body B               raise a question; it holds the story until resolved
+  question answer <question> --body B           record one round of the user's answer
+  question show <question>                      a question with all its rounds
+  question resolve <question> --note N [--scenarios G]
+                                                settle it, adding any new Gherkin scenarios
   version                                       print the version
 
-D and B take literal text, @path to read a file, or - to read stdin.`
+Text flags (D, B, N, G) take literal text, @path to read a file, or - to read stdin.`
 
 // Run executes one aat command from dir and returns the process exit code.
 func Run(ctx context.Context, args []string, dir string, streams Streams) int {
@@ -89,7 +94,7 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 	defer store.Close()
 
 	cmd, rest := args[0], args[1:]
-	if (cmd == "feature" || cmd == "story" || cmd == "scenario") && len(rest) > 0 {
+	if (cmd == "feature" || cmd == "story" || cmd == "scenario" || cmd == "question") && len(rest) > 0 {
 		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}
 	switch cmd {
@@ -111,6 +116,17 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 		return next(ctx, store, rest)
 	case "close":
 		return closeScenario(ctx, store, rest, dir)
+	case "question ask":
+		return questionAsk(ctx, store, rest, stdin)
+	case "question answer":
+		return questionAnswer(ctx, store, rest, stdin)
+	case "question resolve":
+		return questionResolve(ctx, store, rest, stdin)
+	case "question show":
+		if len(rest) != 1 {
+			return nil, usageErr("usage: aat question show <question>")
+		}
+		return store.GetQuestion(ctx, rest[0])
 	}
 	return nil, usageErr("unknown command %q\n%s", strings.Join(args, " "), usage)
 }
@@ -279,9 +295,12 @@ func next(ctx context.Context, store *Store, args []string) (any, error) {
 	if *story == "" {
 		return nil, usageErr("aat next: --story is required")
 	}
-	sc, err := store.NextScenario(ctx, *story)
+	sc, q, err := store.Next(ctx, *story)
 	if err != nil {
 		return nil, err
+	}
+	if q != nil {
+		return map[string]any{"question": q}, nil
 	}
 	return map[string]any{"scenario": sc}, nil
 }
@@ -291,14 +310,14 @@ func next(ctx context.Context, store *Store, args []string) (any, error) {
 // the test name as text. It catches typos and invented names; running the
 // test is the reviewer's job.
 func closeScenario(ctx context.Context, store *Store, args []string, dir string) (any, error) {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return nil, usageErr("usage: aat close <scenario> --test-file F --test NAME")
+	id, rest, err := leadingID(args, "usage: aat close <scenario> --test-file F --test NAME")
+	if err != nil {
+		return nil, err
 	}
-	id := args[0]
 	fs := newFlags("close")
 	testFile := fs.String("test-file", "", "test file path")
 	testName := fs.String("test", "", "test name")
-	if err := parseFlags(fs, args[1:]); err != nil {
+	if err := parseFlags(fs, rest); err != nil {
 		return nil, err
 	}
 	if *testFile == "" || strings.TrimSpace(*testName) == "" {

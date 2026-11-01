@@ -12,6 +12,7 @@ const (
 	featureIDLen  = 6
 	storyIDLen    = 6
 	scenarioIDLen = 8
+	questionIDLen = 6
 )
 
 func newID(n int) (string, error) {
