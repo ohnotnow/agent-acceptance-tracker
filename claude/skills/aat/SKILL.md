@@ -30,20 +30,37 @@ the story's description and all its scenarios. The description is the whole
 picture: you see every scenario from the start so you don't paint yourself
 into a corner. aat hands them out one at a time to keep the pace steady.
 
+If the story shows `retires`, it drops existing behaviour: remove that
+behaviour and the test named on each retired scenario as part of the story.
+`next` doesn't hand these out, so do them alongside the scenarios.
+
 Then loop:
 
 1. Run `aat next --story <story>`.
 2. If it returns `{"scenario": ...}`, build that scenario test first:
    - Write one test for it, run it, and see it fail.
+   - If it passes straight away (the behaviour came free with earlier work),
+     show that it can fail: break the code on purpose, see the test go red,
+     then put the code back. A test that has never failed proves nothing.
    - Write the code to make it pass, and run it again to see it pass.
+   - Don't write tests for later scenarios ahead of time. The pace of one
+     scenario at a time is the point, and only you can keep it.
    - Name the test after the scenario where the framework allows, so a
      reviewer can match them up.
    - Close it: `aat close <scenario> --test-file <file> --test "<test name>"`.
+   - If the scenario has `replaces`, it changes an existing rule. `replaces`
+     shows the old rule, why it changed, and the test that proved it. Write
+     the new test first as usual, then change the code and change or remove
+     the old test. `aat close` warns if the old test name is still in its
+     file.
 3. If it returns `{"question": ...}`, stop building and put the question to
    the user (see below). Don't carry on with other scenarios meanwhile.
-4. If it returns `{"scenario": null}`, the story is finished. Tell the user it
-   is ready for review, and show each scenario with the test that claims to
-   prove it (`aat story show <story>`).
+4. If it returns `{"scenario": null}`, the story is finished. If you noticed
+   gaps along the way, raise them now as questions; they hold the story
+   again until settled. Then tell the user it is ready for review.
+   `aat export <story> --output review.md` writes a markdown review of the
+   whole story: each scenario with the test that claims to prove it, and
+   every question with the user's answers.
 
 Follow the project's own conventions while you build (its CLAUDE.md, its
 component library, its test style). A reviewer checks those as well as the
@@ -53,8 +70,9 @@ test is green.
 ### What `aat close` checks
 
 `aat close` checks only that the test file exists inside the project and
-contains the test name as text. Its output says "found the test name in the
-file". Never describe a scenario as "verified": running the test is the
+contains the test name as text, as a whole name: `test_adding_an_item` isn't
+found inside `test_adding_an_item_twice`. Its output says "found the test
+name in the file". Never describe a scenario as "verified": running the test is the
 reviewer's job. If the same test already closes another scenario, `close`
 still works but warns you; make sure the test really proves both.
 
@@ -99,22 +117,34 @@ the user the export menu"). Treat it exactly like a question you raised.
 
 ### Settling the question
 
-When the user says yes, draft a short note saying what was decided and why,
-show it to the user, and resolve with their approved wording:
+When the user says yes, resolve the question with a short note of what was
+decided and why, in the user's terms. The user doesn't approve each note
+when it is written; they read them all in the review at the end
+(`aat export`), so make each one stand on its own:
 
 ```bash
 # A tweak: nothing joins the spec.
 aat question resolve <question> --note "Right-aligned the header; it lined up badly on mobile."
 
-# New behaviour, with its test already written and passing during the rounds:
+# New behaviour, with its test already written and passing during the rounds.
+# A short scenario can go in on stdin, with no file to write:
 aat question resolve <question> --note "Duplicate names are refused; renaming silently confused people." \
-  --scenarios @new-scenario.feature --test-file tests/Feature/ReportTest.php --test "refuses a duplicate report name"
+  --test-file tests/Feature/ReportTest.php --test "refuses a duplicate report name" --scenarios - <<'EOF'
+Scenario: Refusing a duplicate report name
+  Given a saved report called "Sales"
+  When I save another report called "Sales"
+  Then I am told the name is taken
+EOF
 ```
 
 With `--test-file` and `--test`, the one new scenario arrives already closed,
 so `next` won't hand it out again. If the answer adds more than one scenario,
 resolve with `--scenarios` alone, then close each new scenario with
 `aat close`.
+
+If the answer changes an existing rule rather than adding one, add
+`--replaces <old scenario>`: the old one stays in the record, marked
+replaced, with your note as the reason.
 
 Then go back to `aat next`.
 
@@ -143,6 +173,23 @@ aat scenario add --story <story> --body @more-scenarios.feature
   spec should survive a change of framework, where only the tests get
   rewritten.
 - Brief the fresh session with the story id, and tell it to use this skill.
+
+### Changing behaviour that already exists
+
+The spec is the standing record of what the app does, so a later change is
+a new story that changes the record, not an edit. Start with
+`aat feature show <feature>` to see the current rules. Then, in the new
+story:
+
+```bash
+aat scenario replace <old scenario> --story <story> --reason "Customers abroad have no UK postcode." --body @new-rule.feature
+aat scenario retire <old scenario> --story <story> --reason "We no longer post anything to customers."
+```
+
+Nothing is deleted. The old scenario stays in its original story, marked
+`replaced` or `retired`, with the reason. `feature show` and `publish` give
+only the current rules, and each replacement carries what it replaced and
+why, so a future agent finds the current rule, the old one, and the reason.
 
 ### Gherkin that aat accepts
 
@@ -177,8 +224,14 @@ Scenario: Exporting an empty report
 | `aat question plan --story S --body B` | Plan a check-in after everything added so far |
 | `aat question answer <question> --body B` | Record one round of the user's answer |
 | `aat question show <question>` | The question with every round |
-| `aat question resolve <question> --note N [--scenarios G [--test-file F --test NAME]]` | Settle it |
+| `aat question resolve <question> --note N [--scenarios G [--replaces SC] [--test-file F --test NAME]]` | Settle it |
+| `aat feature show <feature>` | The feature's current scenarios, in order, and its retired ones |
+| `aat scenario show <scenario>` | One scenario, with what it replaced or what replaced it |
+| `aat scenario replace <scenario> --story S --reason R --body G` | Replace a current scenario with one new scenario in a story |
+| `aat scenario retire <scenario> --story S --reason R` | Retire a current scenario as part of a story |
 | `aat feature add`, `feature list`, `story add`, `scenario add` | Agreeing a story, as above |
+| `aat export <story> [--output FILE]` | The story as a markdown review for a person (markdown, not JSON) |
+| `aat publish [--feature F] [--dir D]` | Write each feature as a `.feature` file for Gherkin tools (default `features/` at the project root). Every file is read back with Cucumber's parser first; a file aat didn't write is never overwritten |
 
 Text flags (`--description`, `--body`, `--note`, `--scenarios`) take literal
 text, `@path` to read a file, or `-` to read stdin. Stdin is only read when
