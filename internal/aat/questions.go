@@ -19,15 +19,25 @@ type Round struct {
 }
 
 type Question struct {
-	ID         string  `json:"id"`
-	StoryID    string  `json:"story_id"`
-	Text       string  `json:"text"`
-	Status     string  `json:"status"`
-	Position   int     `json:"position,omitempty"` // a planned check-in's place in the story's order
-	Note       string  `json:"note,omitempty"`
-	Rounds     []Round `json:"rounds,omitempty"`
-	CreatedAt  string  `json:"created_at"`
-	ResolvedAt string  `json:"resolved_at,omitempty"`
+	ID          string       `json:"id"`
+	StoryID     string       `json:"story_id"`
+	Text        string       `json:"text"`
+	Status      string       `json:"status"`
+	Position    int          `json:"position,omitempty"` // a planned check-in's place in the story's order
+	Note        string       `json:"note,omitempty"`
+	Rounds      []Round      `json:"rounds,omitempty"`
+	Corrections []Correction `json:"corrections,omitempty"`
+	CreatedAt   string       `json:"created_at"`
+	ResolvedAt  string       `json:"resolved_at,omitempty"`
+}
+
+// Correction is a visible change to a recorded answer or resolve note: what
+// it said before, why it was changed, and when.
+type Correction struct {
+	Target    string `json:"target"` // "round N" or "note"
+	Was       string `json:"was"`
+	Reason    string `json:"reason"`
+	CreatedAt string `json:"created_at"`
 }
 
 // AskQuestion raises a question mid-build. It holds the story at once.
@@ -42,7 +52,7 @@ func (s *Store) PlanQuestion(ctx context.Context, storyID, text string) (Questio
 }
 
 func (s *Store) addQuestion(ctx context.Context, storyID, text string, planned bool) (Question, error) {
-	if err := s.requireStory(ctx, storyID); err != nil {
+	if err := s.requireOpenStory(ctx, storyID); err != nil {
 		return Question{}, err
 	}
 	id, err := newID(questionIDLen)
@@ -109,7 +119,10 @@ func (s *Store) GetQuestion(ctx context.Context, id string) (Question, error) {
 		return Question{}, notFoundErr("no question %q", id)
 	}
 	q := qs[0]
-	q.Rounds, err = s.loadRounds(ctx, id)
+	if q.Rounds, err = s.loadRounds(ctx, id); err != nil {
+		return q, err
+	}
+	q.Corrections, err = s.loadCorrections(ctx, id)
 	return q, err
 }
 
@@ -124,8 +137,73 @@ func (s *Store) StoryQuestions(ctx context.Context, storyID string) ([]Question,
 		if qs[i].Rounds, err = s.loadRounds(ctx, qs[i].ID); err != nil {
 			return nil, err
 		}
+		if qs[i].Corrections, err = s.loadCorrections(ctx, qs[i].ID); err != nil {
+			return nil, err
+		}
 	}
 	return qs, nil
+}
+
+func (s *Store) loadCorrections(ctx context.Context, questionID string) ([]Correction, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT target, was, reason, created_at FROM question_corrections WHERE question_id = ? ORDER BY created_at, rowid", questionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cs []Correction
+	for rows.Next() {
+		var c Correction
+		if err := rows.Scan(&c.Target, &c.Was, &c.Reason, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		cs = append(cs, c)
+	}
+	return cs, rows.Err()
+}
+
+// CorrectAnswer replaces the text of one recorded answer (round counts from
+// 1), keeping what it said before and why it changed.
+func (s *Store) CorrectAnswer(ctx context.Context, id string, round int, text, reason string) (Question, error) {
+	q, err := s.GetQuestion(ctx, id)
+	if err != nil {
+		return q, err
+	}
+	if round < 1 || round > len(q.Rounds) {
+		return q, notFoundErr("question %q has no round %d", id, round)
+	}
+	return s.correct(ctx, q, fmt.Sprintf("round %d", round), q.Rounds[round-1].Answer, text, reason,
+		"UPDATE question_rounds SET answer = ? WHERE question_id = ? AND position = ?", text, id, round)
+}
+
+// CorrectNote replaces a resolved question's note, keeping what it said
+// before and why it changed.
+func (s *Store) CorrectNote(ctx context.Context, id, text, reason string) (Question, error) {
+	q, err := s.GetQuestion(ctx, id)
+	if err != nil {
+		return q, err
+	}
+	if q.Status != "resolved" {
+		return q, conflictErr("question %q is still open, so it has no resolve note to correct", id)
+	}
+	return s.correct(ctx, q, "note", q.Note, text, reason, "UPDATE questions SET note = ? WHERE id = ?", text, id)
+}
+
+// correct records a correction and applies the update, together.
+func (s *Store) correct(ctx context.Context, q Question, target, was, text, reason, update string, args ...any) (Question, error) {
+	if text == was {
+		return q, validationErr("%s of question %q already says that", target, q.ID)
+	}
+	if err := s.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO question_corrections (question_id, target, was, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+			q.ID, target, was, reason, now()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, update, args...)
+		return err
+	}); err != nil {
+		return q, err
+	}
+	return s.GetQuestion(ctx, q.ID)
 }
 
 func (s *Store) loadRounds(ctx context.Context, questionID string) ([]Round, error) {
@@ -414,6 +492,46 @@ func questionResolve(ctx context.Context, store *Store, args []string, stdin io.
 		out["warnings"] = warnings
 	}
 	return out, nil
+}
+
+func questionCorrect(ctx context.Context, store *Store, args []string, stdin io.Reader) (any, error) {
+	const usage = "usage: aat question correct <question> (--round N | --resolve-note) --body TEXT --reason TEXT"
+	id, rest, err := leadingID(args, usage)
+	if err != nil {
+		return nil, err
+	}
+	fs := newFlags("question correct")
+	round := fs.Int("round", 0, "the answer to correct, counting from 1")
+	resolveNote := fs.Bool("resolve-note", false, "correct the resolve note instead of an answer")
+	body := fs.String("body", "", "the corrected text")
+	reasonFlag := fs.String("reason", "", "why it is being corrected")
+	if err := parseFlags(fs, rest); err != nil {
+		return nil, err
+	}
+	if (*round > 0) == *resolveNote {
+		return nil, usageErr("aat question correct: give one of --round N or --resolve-note\n%s", usage)
+	}
+	if *body == "" || *reasonFlag == "" {
+		return nil, usageErr("aat question correct: --body and --reason are required\n%s", usage)
+	}
+	if *body == "-" && *reasonFlag == "-" {
+		return nil, usageErr("aat question correct: only one of --body and --reason can read stdin; use @path for the other")
+	}
+	text, err := readText(*body, stdin)
+	if err != nil {
+		return nil, err
+	}
+	reason, err := readText(*reasonFlag, stdin)
+	if err != nil {
+		return nil, err
+	}
+	if text == "" || reason == "" {
+		return nil, validationErr("aat question correct: the corrected text and the reason can't be empty")
+	}
+	if *resolveNote {
+		return store.CorrectNote(ctx, id, text, reason)
+	}
+	return store.CorrectAnswer(ctx, id, *round, text, reason)
 }
 
 // leadingID splits "<id> --flags..." for commands that act on one record.

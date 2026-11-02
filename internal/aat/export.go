@@ -65,6 +65,11 @@ func renderStory(st Story, qs []Question) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%sfeature: %s\ncreated_at: %s\n---\n\n", frontMatter(st), st.Feature.ID, st.CreatedAt)
 	fmt.Fprintf(&b, "## %s\n\nFeature: %s\n\n", st.Title, st.Feature.Title)
+	if st.AcceptedAt == "" {
+		b.WriteString("Not accepted yet.\n\n")
+	} else {
+		fmt.Fprintf(&b, "Accepted on %s. %s\n\n", st.AcceptedAt, st.AcceptNote)
+	}
 	if st.Description != "" {
 		b.WriteString(st.Description + "\n\n")
 	}
@@ -170,5 +175,12 @@ func renderQuestion(b *strings.Builder, q Question) {
 		fmt.Fprintf(b, "Settled: %s\n\n", q.Note)
 	} else {
 		b.WriteString("Still open.\n\n")
+	}
+	for _, c := range q.Corrections {
+		fmt.Fprintf(b, "Corrected %s on %s. Reason: %s It said:\n\n", c.Target, c.CreatedAt, c.Reason)
+		for _, l := range strings.Split(c.Was, "\n") {
+			b.WriteString(strings.TrimRight("> "+l, " ") + "\n")
+		}
+		b.WriteString("\n")
 	}
 }

@@ -33,9 +33,11 @@ type Story struct {
 	Title       string     `json:"title"`
 	Description string     `json:"description,omitempty"`
 	CreatedAt   string     `json:"created_at"`
-	Steps       []Step     `json:"steps"`             // scenarios and planned check-ins, in the story's order
-	Questions   []Question `json:"questions"`         // open questions asked mid-build, without rounds
-	Retires     []Scenario `json:"retires,omitempty"` // scenarios this story retired, whose behaviour and tests it removes
+	Steps       []Step     `json:"steps"`                 // scenarios and planned check-ins, in the story's order
+	Questions   []Question `json:"questions"`             // open questions asked mid-build, without rounds
+	Retires     []Scenario `json:"retires,omitempty"`     // scenarios this story retired, whose behaviour and tests it removes
+	AcceptedAt  string     `json:"accepted_at,omitempty"` // when the user reviewed and accepted the finished story
+	AcceptNote  string     `json:"accept_note,omitempty"`
 }
 
 // Step is one place in a story's order: a scenario, or a planned check-in
@@ -173,6 +175,23 @@ var migrations = []migration{
 	}},
 	{6, "removing a retired scenario's behaviour is work, closed when its test is gone", func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `ALTER TABLE scenarios ADD COLUMN removed_at TEXT;`)
+		return err
+	}},
+	{7, "accepting a finished story", func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			ALTER TABLE stories ADD COLUMN accepted_at TEXT;
+			ALTER TABLE stories ADD COLUMN accept_note TEXT NOT NULL DEFAULT '';`)
+		return err
+	}},
+	{8, "visible corrections to a question's answers and note", func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			CREATE TABLE question_corrections (
+				question_id TEXT NOT NULL REFERENCES questions(id),
+				target      TEXT NOT NULL, -- "round N" or "note"
+				was         TEXT NOT NULL,
+				reason      TEXT NOT NULL,
+				created_at  TEXT NOT NULL
+			);`)
 		return err
 	}},
 }
@@ -331,9 +350,9 @@ func (s *Store) AddStory(ctx context.Context, featureID, title, description stri
 func (s *Store) GetStory(ctx context.Context, id string) (Story, error) {
 	st := Story{ID: id}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT st.title, st.description, st.created_at, f.id, f.title
+		SELECT st.title, st.description, st.created_at, f.id, f.title, COALESCE(st.accepted_at, ''), st.accept_note
 		FROM stories st JOIN features f ON f.id = st.feature_id
-		WHERE st.id = ?`, id).Scan(&st.Title, &st.Description, &st.CreatedAt, &st.Feature.ID, &st.Feature.Title)
+		WHERE st.id = ?`, id).Scan(&st.Title, &st.Description, &st.CreatedAt, &st.Feature.ID, &st.Feature.Title, &st.AcceptedAt, &st.AcceptNote)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, notFoundErr("no story %q", id)
 	}
@@ -372,9 +391,48 @@ func (s *Store) requireStory(ctx context.Context, id string) error {
 	return err
 }
 
+// requireOpenStory is requireStory for adding to a story's work: an
+// accepted story takes nothing more, and later changes need a new story.
+func (s *Store) requireOpenStory(ctx context.Context, id string) error {
+	var acceptedAt sql.NullString
+	err := s.db.QueryRowContext(ctx, "SELECT accepted_at FROM stories WHERE id = ?", id).Scan(&acceptedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return notFoundErr("no story %q", id)
+	}
+	if err != nil {
+		return err
+	}
+	if acceptedAt.Valid {
+		return conflictErr("story %q was accepted on %s; make later changes in a new story", id, acceptedAt.String)
+	}
+	return nil
+}
+
+// AcceptStory records that the user reviewed a finished story and accepted
+// it. A story is finished when next has nothing left to hand out.
+func (s *Store) AcceptStory(ctx context.Context, id, note string) (Story, error) {
+	if err := s.requireOpenStory(ctx, id); err != nil {
+		return Story{}, err
+	}
+	sc, q, err := s.Next(ctx, id)
+	if err != nil {
+		return Story{}, err
+	}
+	switch {
+	case q != nil:
+		return Story{}, conflictErr("story %q isn't finished: question %s is still open", id, q.ID)
+	case sc != nil:
+		return Story{}, conflictErr("story %q isn't finished: scenario %s is still to do", id, sc.ID)
+	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE stories SET accepted_at = ?, accept_note = ? WHERE id = ?", now(), note, id); err != nil {
+		return Story{}, err
+	}
+	return s.GetStory(ctx, id)
+}
+
 // AddScenarios appends scenarios to the end of a story, all or nothing.
 func (s *Store) AddScenarios(ctx context.Context, storyID string, parsed []ParsedScenario) ([]Scenario, error) {
-	if err := s.requireStory(ctx, storyID); err != nil {
+	if err := s.requireOpenStory(ctx, storyID); err != nil {
 		return nil, err
 	}
 	var added []Scenario

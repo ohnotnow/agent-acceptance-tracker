@@ -31,6 +31,8 @@ const usage = `usage: aat [--db path] <command> [flags]
                                                 add a story (a piece of work) to a feature
   story show <story>                            a story's scenarios and planned check-ins in order,
                                                 its open questions and its retirements
+  story accept <story> --note N                 record that the user reviewed the finished story
+                                                and accepted it; it then takes no more work
   scenario add --story S --body B               add Gherkin scenarios to a story
   scenario show <scenario>                      one scenario, with what it replaced or what replaced it
   scenario replace <scenario> --story S --reason R --body B
@@ -47,7 +49,10 @@ const usage = `usage: aat [--db path] <command> [flags]
   question plan --story S --body B              plan a check-in after everything in the story so far;
                                                 it holds the story once next reaches it
   question answer <question> --body B           record one round of the user's answer
-  question show <question>                      a question with all its rounds
+  question show <question>                      a question with all its rounds and any corrections
+  question correct <question> (--round N | --resolve-note) --body T --reason R
+                                                correct a recorded answer or resolve note; the
+                                                old text and the reason stay on the record
   question resolve <question> --note N [--scenarios G [--replaces SC] [--test-file F --test NAME]]
                                                 settle it, adding any new Gherkin scenarios;
                                                 the one new scenario can replace a current one,
@@ -137,6 +142,8 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 			return nil, usageErr("usage: aat story show <story>")
 		}
 		return store.GetStory(ctx, rest[0])
+	case "story accept":
+		return storyAccept(ctx, store, rest, stdin)
 	case "scenario add":
 		return scenarioAdd(ctx, store, rest, stdin)
 	case "scenario show":
@@ -160,6 +167,8 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 		return questionAnswer(ctx, store, rest, stdin)
 	case "question resolve":
 		return questionResolve(ctx, store, rest, stdin, dir)
+	case "question correct":
+		return questionCorrect(ctx, store, rest, stdin)
 	case "question show":
 		if len(rest) != 1 {
 			return nil, usageErr("usage: aat question show <question>")
@@ -303,6 +312,33 @@ func storyAdd(ctx context.Context, store *Store, args []string, stdin io.Reader)
 		return nil, err
 	}
 	return store.AddStory(ctx, *feature, t, d)
+}
+
+func storyAccept(ctx context.Context, store *Store, args []string, stdin io.Reader) (any, error) {
+	id, rest, err := leadingID(args, "usage: aat story accept <story> --note TEXT")
+	if err != nil {
+		return nil, err
+	}
+	fs := newFlags("story accept")
+	noteFlag := fs.String("note", "", "what the user said on accepting it")
+	if err := parseFlags(fs, rest); err != nil {
+		return nil, err
+	}
+	if *noteFlag == "" {
+		return nil, usageErr("aat story accept: --note is required")
+	}
+	note, err := readText(*noteFlag, stdin)
+	if err != nil {
+		return nil, err
+	}
+	if note == "" {
+		return nil, validationErr("aat story accept: the note is empty")
+	}
+	st, err := store.AcceptStory(ctx, id, note)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"id": st.ID, "accepted_at": st.AcceptedAt, "accept_note": st.AcceptNote}, nil
 }
 
 func scenarioAdd(ctx context.Context, store *Store, args []string, stdin io.Reader) (any, error) {

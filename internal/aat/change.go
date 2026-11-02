@@ -16,7 +16,7 @@ import (
 // exist, the scenario is still current, and both are on the same feature.
 // It returns the scenario.
 func (s *Store) changeable(ctx context.Context, scenarioID, storyID string) (Scenario, error) {
-	if err := s.requireStory(ctx, storyID); err != nil {
+	if err := s.requireOpenStory(ctx, storyID); err != nil {
 		return Scenario{}, err
 	}
 	sc, err := s.GetScenario(ctx, scenarioID)
