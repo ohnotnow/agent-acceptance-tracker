@@ -62,6 +62,9 @@ Then loop:
      scenario at a time is the point, and only you can keep it.
    - Name the test after the scenario where the framework allows, so a
      reviewer can match them up.
+   - "Nobody else is emailed" (or changed) is about the moment in the
+     scenario's When. Its Given may send things of its own, so start
+     counting after the Given, not from the start of the test.
    - Run the whole suite, not just the new test, and compare it with your
      baseline. aat only knows about tests written through it: in an app
      built before aat, the old rules live in old tests that nothing points
@@ -87,10 +90,32 @@ Then loop:
    whole suite one last time and compare it with your baseline. If you
    noticed gaps along the way, raise them now as questions; they hold the
    story again until settled. Then tell the user it is ready for review,
-   with the suite's result.
-   `aat export <story> --output review.md` writes a markdown review of the
-   whole story: each scenario with the test that claims to prove it, and
-   every question with the user's answers.
+   with the suite's result. Start that message with anything the user has
+   not yet seen working (a screen, an email), each with a link they can
+   open, so it can't be lost further down.
+   `aat export <story> --output .aat/<story>-review.md` writes a markdown
+   review of the whole story: each scenario with the test that claims to
+   prove it, and every question with the user's answers. Keep it inside
+   `.aat/`, which is gitignored, so it doesn't land in the project.
+
+### Where the project keeps its rules
+
+House rules (how things are built, as opposed to what the app does) live
+with the project, usually in CLAUDE.md or AGENTS.md. But some projects
+generate that file with a tool that rewrites it, and a rule written straight
+into it is lost on the next rewrite. Before adding or changing a rule, check
+whether the file is generated, and if so, put the rule in the tool's own
+source file, plus the generated file so it applies now. Signs:
+
+- The file opens with a tool's marker or says it is generated. Laravel
+  Boost's CLAUDE.md starts with `<laravel-boost-guidelines>`, has a
+  `boost.json` beside it, and takes project rules from `.ai/guidelines/*`.
+- A config file for an agent-guidance tool sits at the project root.
+  Similar tools are reported for other stacks (Django AI Boost, Rails
+  Hyperdrive, Next.js agent support, .NET Aspire's `aspire agent init`);
+  none of these were checked, so read the tool's docs to find where its
+  custom rules go.
+- If you can't tell, ask the user.
 
 Follow the project's own conventions while you build (its CLAUDE.md, its
 component library, its test style). A reviewer checks those as well as the
@@ -165,7 +190,10 @@ the user the export menu"). Treat it exactly like a question you raised.
    user says yes to your suggestion before you have built it, and there is
    nothing new for them to see (a change to stored data, say), that yes
    stands: build it test first, then resolve, and say in the note that the
-   user agreed before it was built.
+   user agreed before it was built. If there is something to see (a
+   screen, an email), a yes before it was built is not the last word:
+   build it, put it in front of the user with a link they can open, and
+   keep the question open until they have seen it and said yes again.
 
 ### When another session is coordinating
 
@@ -177,8 +205,9 @@ talking. Questions then go through it:
 1. Raise the question in aat as usual (or note the check-in `next` handed
    you). Then message the coordinating session, replying to the address
    your instructions came from, with the story id, the question id, and
-   one line on what it is about. For a check-in, also say what the user
-   should look at and how to reach it (a URL their phone can open, say).
+   one line on what it is about. Whenever there is something to look at
+   (a check-in, or a change you built after a yes), say what and how to
+   reach it (a URL their phone can open, say).
 2. Wait. The coordinating session puts the question to the user and
    records each reply with `aat question answer`. When it tells you to
    carry on, read the answers with `aat question show <question>`.
@@ -190,6 +219,12 @@ talking. Questions then go through it:
    the question yourself once the user has said yes.
 5. If your message can't be delivered (the coordinating session has
    closed), put the question to the user directly in your own session.
+6. The user may still talk to you directly, for example by pasting in a
+   side agent's note. Answer them, but don't let a decision live only in
+   your session: raise it as a question in aat (or record a round on the
+   open one) in the user's exact words, then message the coordinating
+   session with what was decided. Messages from the user and from the
+   coordinator can arrive out of order, so say which you are answering.
 
 ### Settling the question
 
@@ -222,6 +257,18 @@ If the answer changes an existing rule rather than adding one, add
 `--replaces <old scenario>`: the old one stays in the record, marked
 replaced, with your note as the reason.
 
+If a recorded answer or resolve note turns out to be wrong (a note that
+describes a fix later replaced, words in an answer that weren't the
+user's), correct it visibly rather than leaving it:
+
+```bash
+aat question correct <question> --round 2 --body "<the user's exact words>" --reason "Removed a summary that wasn't the user's."
+aat question correct <question> --resolve-note --body "<what is now true>" --reason "Question X replaced this fix."
+```
+
+The old text, the reason and the time stay on the record, and
+`question show` and the review show them.
+
 Then go back to `aat next`.
 
 ## Agreeing a story with the user
@@ -244,10 +291,21 @@ aat scenario add --story <story> --body @more-scenarios.feature
   exports, emails, and every way a record can be created or changed. Give
   each one a scenario, or say in the story description that it is
   deliberately left alone. Anything not covered is a guess for the builder.
+  Before calling something left alone, check it still means the same after
+  the change, not just that its code is untouched: a "notified at" column
+  nobody edits can still end up holding the same time for everyone.
+- Say what must not happen as well as what must. A scenario only promises
+  what it says: "Dan is emailed" lets a test pass while Cat is emailed
+  too, so existing code that sends extra emails survives. When a moment
+  sends or changes several things, write one scenario for that moment
+  listing all of them, then "and nobody else is emailed" (or the
+  equivalent). Two scenarios about the same moment, each saying "nobody
+  else", would contradict each other.
 - When the same data can arrive by more than one route (a form and an
   import, say), write a scenario that the routes record it identically,
   including when a field is left empty. What "empty" is stored as belongs
-  in the project's own rules (its CLAUDE.md), not in the scenario.
+  in the project's own rules (see "Where the project keeps its rules"),
+  not in the scenario.
 - The story description is what the building session reads first: what is
   wanted and why, and anything known that doesn't fit a scenario.
 - Scenarios are handed out in the order they were added.
@@ -266,11 +324,48 @@ aat scenario add --story <story> --body @more-scenarios.feature
   rewritten.
 - Brief the fresh session with the story id, and tell it to use this skill.
 - If you brief it by message from your own session, you are its
-  coordinator. When it messages you about a question, read the question
-  (`aat question show`) and the story, and put it to the user with enough
-  context to answer: what is being built, what they are being asked, and
-  your suggestion. Record each reply in the user's words with
-  `aat question answer`, then message the builder to carry on.
+  coordinator. The user never sees the builder's messages to you, and
+  may not have looked at this app in months. Everything you pass on must
+  make sense on its own: rewrite it from what the user would see on screen,
+  with an example, never in the builder's words or in code terms
+  ("still to do", "notified flag", "the seeder"). If a point needs no
+  decision from the user, don't pass it on as one. When it messages you
+  about a question, read the question (`aat question show`) and the
+  story, and put it to the user with enough context to answer: what is
+  being built, what they are being asked, and your suggestion. If there is anything to look at, put it first, with its
+  link. When a check-in shows several things, ask about each one; a reply
+  about one of them is not a yes to the rest. Record each reply with
+  `aat question answer`, containing only the user's exact words: no
+  summary, no "(agreeing to ...)", no framing of your own. Future readers
+  treat an answer as the user's decision, so anything you add becomes
+  something they never said. If the reply only makes sense with what you
+  asked, put that in your message to the builder, for its resolve note.
+  Then message the builder to carry on.
+
+### Reviewing a finished story
+
+When the builder says the story is finished (as coordinator, or when the
+user asks you to review):
+
+1. Lead with anything the user has not yet seen working, each with a link.
+   Don't bury it among the findings.
+2. Pass on the builder's own notes in full, briefly, with what you would do
+   about each one. The user can't see the builder's messages to you.
+3. Run the whole suite. Read the diff and each scenario's test, and check
+   the test proves what the scenario says, including anything it says must
+   not happen.
+4. Ask a fresh-eyes agent, with no part in the build, to read the diff
+   against the story description, looking for anything whose meaning
+   changed without a scenario saying so (a column, a status, a badge, a
+   doc), and for docs that no longer match the app.
+5. Raise each finding that needs work as a question on the story
+   (`aat question ask`), in plain words with your suggestion, and record
+   the user's answer. The builder gets them from `aat next` like any
+   question, so the story holds until they are settled.
+6. When the user is happy and nothing is left, accept the story with their
+   words: `aat story accept <story> --note "..."`. Only the user accepts.
+   An accepted story takes no more scenarios or questions; later changes
+   are a new story.
 
 ### Changing behaviour that already exists
 
@@ -315,6 +410,7 @@ Scenario: Exporting an empty report
 
 | Command | What it does |
 | --- | --- |
+| `aat story accept <story> --note N` | Record that the user reviewed the finished story and accepted it |
 | `aat story show <story>` | The story, its feature, its steps in order (scenarios with status and test, and planned check-ins), open questions raised mid-build, and the scenarios it retires |
 | `aat next --story S` | A question asked mid-build if there is one, then a retirement to remove, otherwise the first open scenario or planned check-in |
 | `aat close <scenario> --test-file F --test NAME` | Close a scenario with the test that proves it |
@@ -322,7 +418,8 @@ Scenario: Exporting an empty report
 | `aat question ask --story S --body B` | Raise a question now; it holds the story |
 | `aat question plan --story S --body B` | Plan a check-in after everything added so far |
 | `aat question answer <question> --body B` | Record one round of the user's answer |
-| `aat question show <question>` | The question with every round |
+| `aat question show <question>` | The question with every round and any corrections |
+| `aat question correct <question> (--round N \| --resolve-note) --body B --reason R` | Correct a recorded answer or resolve note, visibly |
 | `aat question resolve <question> --note N [--scenarios G [--replaces SC] [--test-file F --test NAME]]` | Settle it |
 | `aat feature show <feature>` | The feature's current scenarios, in order, and its retired ones |
 | `aat scenario show <scenario>` | One scenario, with what it replaced or what replaced it |
