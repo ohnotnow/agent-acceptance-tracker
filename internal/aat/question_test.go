@@ -16,10 +16,11 @@ type questionOut struct {
 	Rounds  []struct {
 		Answer string `json:"answer"`
 	} `json:"rounds"`
-	Position  int           `json:"position"`
-	Scenarios []scenarioOut `json:"scenarios"`
-	Check     string        `json:"check"`
-	Warnings  []string      `json:"warnings"`
+	Position   int           `json:"position"`
+	ResolvedAt string        `json:"resolved_at"`
+	Scenarios  []scenarioOut `json:"scenarios"`
+	Check      string        `json:"check"`
+	Warnings   []string      `json:"warnings"`
 }
 
 // nextID returns the id of whatever next hands out, scenario or question, or "" for nothing.
@@ -32,13 +33,29 @@ func nextID(t *testing.T, dir, story string) string {
 		return next.Question.ID
 	case next.Scenario != nil:
 		return next.Scenario.ID
+	case next.Retirement != nil:
+		return next.Retirement.ID
 	}
 	return ""
 }
 
+// stepIDs lists the ids of a story's steps in order, separated by spaces.
+func stepIDs(steps []stepOut) string {
+	var ids []string
+	for _, st := range steps {
+		if st.Scenario != nil {
+			ids = append(ids, st.Scenario.ID)
+		} else if st.Question != nil {
+			ids = append(ids, st.Question.ID)
+		}
+	}
+	return strings.Join(ids, " ")
+}
+
 type nextOut struct {
-	Scenario *scenarioOut `json:"scenario"`
-	Question *questionOut `json:"question"`
+	Scenario   *scenarioOut `json:"scenario"`
+	Question   *questionOut `json:"question"`
+	Retirement *scenarioOut `json:"retirement"`
 }
 
 func ask(t *testing.T, dir, story, text string) questionOut {
@@ -173,14 +190,7 @@ func TestResolvingAQuestion(t *testing.T) {
 			t.Fatalf("without a test, the new scenario should arrive open: %#v", resolved.Scenarios[0])
 		}
 
-		var shown struct {
-			Scenarios []struct {
-				ID         string `json:"id"`
-				Title      string `json:"title"`
-				QuestionID string `json:"question_id"`
-			} `json:"scenarios"`
-			Questions []questionOut `json:"questions"`
-		}
+		var shown storyOut
 		mustRun(t, dir, "", &shown, "story", "show", story)
 		last := shown.Scenarios[len(shown.Scenarios)-1]
 		if len(shown.Scenarios) != 3 || last.Title != "Exporting an empty report" || last.QuestionID != q.ID {
@@ -381,19 +391,51 @@ func TestPlanningACheckIn(t *testing.T) {
 		}
 	})
 
-	t.Run("the story shows where the check-in sits", func(t *testing.T) {
-		dir, story, _, planned := setup(t)
-		var shown struct {
-			Scenarios []scenarioOut `json:"scenarios"`
-			Questions []questionOut `json:"questions"`
-		}
+	t.Run("the story lists the check-in in its place among the scenarios", func(t *testing.T) {
+		dir, story, ids, planned := setup(t)
+		var shown storyOut
 		mustRun(t, dir, "", &shown, "story", "show", story)
-		if len(shown.Questions) != 1 || shown.Questions[0].ID != planned.ID {
+		if got, want := stepIDs(shown.Steps), strings.Join([]string{ids[0], ids[1], planned.ID, ids[2]}, " "); got != want {
+			t.Fatalf("steps = %s, want %s", got, want)
+		}
+		if q := shown.Steps[2].Question; q.Status != "open" || q.Position != planned.Position {
+			t.Fatalf("check-in = %#v", q)
+		}
+		if len(shown.Questions) != 0 {
+			t.Fatalf("questions should be the ones asked mid-build only: %#v", shown.Questions)
+		}
+	})
+
+	t.Run("once resolved, the story still shows the check-in in its place, with its note", func(t *testing.T) {
+		dir, story, ids, planned := setup(t)
+		mustRun(t, dir, "", nil, "close", ids[0], "--test-file", "tests/Feature/ExportTest.php", "--test", "exports a report as xlsx")
+		mustRun(t, dir, "", nil, "close", ids[1], "--test-file", "tests/Feature/ExportTest.php", "--test", "offers csv and xlsx in the export menu")
+		mustRun(t, dir, "", nil, "question", "answer", planned.ID, "--body", "Make the menu wider.")
+		mustRun(t, dir, "", nil, "question", "resolve", planned.ID, "--note", "The user is happy with the wider menu.")
+		var shown storyOut
+		mustRun(t, dir, "", &shown, "story", "show", story)
+		if got, want := stepIDs(shown.Steps), strings.Join([]string{ids[0], ids[1], planned.ID, ids[2]}, " "); got != want {
+			t.Fatalf("steps = %s, want %s", got, want)
+		}
+		got := shown.Steps[2].Question
+		if got.ID != planned.ID || got.Position != planned.Position || got.Status != "resolved" ||
+			got.Note != "The user is happy with the wider menu." || got.ResolvedAt == "" || len(got.Rounds) != 0 {
+			t.Fatalf("check-in = %#v", got)
+		}
+	})
+
+	t.Run("a question asked mid-build isn't a step, and leaves the questions list once resolved", func(t *testing.T) {
+		dir, story, ids, planned := setup(t)
+		asked := ask(t, dir, story, "What about very wide reports?")
+		var shown storyOut
+		mustRun(t, dir, "", &shown, "story", "show", story)
+		if len(shown.Questions) != 1 || shown.Questions[0].ID != asked.ID {
 			t.Fatalf("questions = %#v", shown.Questions)
 		}
-		pos := shown.Questions[0].Position
-		if len(shown.Scenarios) != 3 || !(shown.Scenarios[1].Position < pos && pos < shown.Scenarios[2].Position) {
-			t.Fatalf("check-in at %d, scenarios = %#v", pos, shown.Scenarios)
+		mustRun(t, dir, "", nil, "question", "resolve", asked.ID, "--note", "Same as any report.")
+		mustRun(t, dir, "", &shown, "story", "show", story)
+		if got, want := stepIDs(shown.Steps), strings.Join([]string{ids[0], ids[1], planned.ID, ids[2]}, " "); got != want {
+			t.Fatalf("steps = %s, want %s", got, want)
 		}
 	})
 

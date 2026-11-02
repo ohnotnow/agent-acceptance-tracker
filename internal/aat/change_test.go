@@ -252,6 +252,61 @@ func TestRetiringAScenario(t *testing.T) {
 		}
 	})
 
+	t.Run("next hands it out as work before the story's own scenarios", func(t *testing.T) {
+		dir, _, old, later := retired(t)
+		mustRun(t, dir, postcodeOptional, nil, "scenario", "add", "--story", later, "--body", "-")
+		var next nextOut
+		mustRun(t, dir, "", &next, "next", "--story", later)
+		if next.Retirement == nil || next.Retirement.ID != old || next.Retirement.Test != "requires a postcode" ||
+			next.Retirement.TestFile != "tests/SignUpTest.php" || next.Scenario != nil {
+			t.Fatalf("next = %#v", next)
+		}
+	})
+
+	t.Run("closing it is refused while its test is still in the file", func(t *testing.T) {
+		dir, _, old, later := retired(t)
+		if code := errorCode(t, dir, "", "close", old); code != "validation" {
+			t.Fatalf("code = %q, want validation", code)
+		}
+		if got := nextID(t, dir, later); got != old {
+			t.Fatalf("next = %q, want the retirement %s still", got, old)
+		}
+	})
+
+	t.Run("once its test is gone, closing it records the removal and next moves on", func(t *testing.T) {
+		dir, _, old, later := retired(t)
+		writeTests(t, dir, "it('creates an account', fn () => true);")
+		var closed struct {
+			ID        string `json:"id"`
+			Status    string `json:"status"`
+			RemovedAt string `json:"removed_at"`
+			Check     string `json:"check"`
+		}
+		mustRun(t, dir, "", &closed, "close", old)
+		if closed.ID != old || closed.Status != "retired" || closed.RemovedAt == "" || closed.Check == "" {
+			t.Fatalf("close = %#v", closed)
+		}
+		if got := nextID(t, dir, later); got != "" {
+			t.Fatalf("next = %q, want nothing left", got)
+		}
+		var shown scenarioOut
+		mustRun(t, dir, "", &shown, "scenario", "show", old)
+		if shown.Status != "retired" || shown.RemovedAt != closed.RemovedAt {
+			t.Fatalf("scenario = %#v", shown)
+		}
+		if code := errorCode(t, dir, "", "close", old); code != "conflict" {
+			t.Fatalf("closing twice: code = %q, want conflict", code)
+		}
+	})
+
+	t.Run("a test file that is gone altogether counts as removed", func(t *testing.T) {
+		dir, _, old, _ := retired(t)
+		if err := os.Remove(filepath.Join(dir, "tests", "SignUpTest.php")); err != nil {
+			t.Fatal(err)
+		}
+		mustRun(t, dir, "", nil, "close", old)
+	})
+
 	t.Run("it is refused without a reason, or once already retired", func(t *testing.T) {
 		dir, _, old, later := retired(t)
 		if code := errorCode(t, dir, "", "scenario", "retire", old, "--story", later); code != "usage" {
@@ -292,6 +347,32 @@ func TestChangingTheSpecEdgeCases(t *testing.T) {
 			if code := errorCode(t, dir, "", "close", old, "--test-file", "tests/SignUpTest.php", "--test", "requires a postcode"); code != "conflict" {
 				t.Fatalf("%s: code = %q, want conflict", change[1], code)
 			}
+		}
+	})
+
+	t.Run("retiring a scenario that was never built leaves no test to look for", func(t *testing.T) {
+		dir, old, later := openPostcodeRule(t)
+		mustRun(t, dir, "", nil, "scenario", "retire", old, "--story", later, "--reason", "x")
+		mustRun(t, dir, "", nil, "close", old)
+	})
+
+	t.Run("retiring a replacement that was never built looks for the old rule's test", func(t *testing.T) {
+		dir, feature, _, _, unbuilt := postcodeReplaced(t)
+		third := addStory(t, dir, feature, "Stop asking for a postcode")
+		mustRun(t, dir, "", nil, "scenario", "retire", unbuilt.ID, "--story", third.ID, "--reason", "We no longer post anything to customers.")
+		if code := errorCode(t, dir, "", "close", unbuilt.ID); code != "validation" {
+			t.Fatalf("code = %q, want validation while 'requires a postcode' is still in the file", code)
+		}
+	})
+
+	t.Run("a test can't be named when closing a retirement, nor left out when closing a scenario", func(t *testing.T) {
+		dir, old, later := openPostcodeRule(t)
+		if code := errorCode(t, dir, "", "close", old); code != "usage" {
+			t.Fatalf("current scenario without a test: code = %q, want usage", code)
+		}
+		mustRun(t, dir, "", nil, "scenario", "retire", old, "--story", later, "--reason", "x")
+		if code := errorCode(t, dir, "", "close", old, "--test-file", "tests/SignUpTest.php", "--test", "requires a postcode"); code != "conflict" {
+			t.Fatalf("retirement with a test: code = %q, want conflict", code)
 		}
 	})
 
@@ -391,7 +472,14 @@ func TestChangingTheSpecEdgeCases(t *testing.T) {
 		retiring := addStory(t, dir, feature, "Stop asking for a postcode")
 		mustRun(t, dir, "", nil, "scenario", "retire", old, "--story", retiring.ID, "--reason", "x")
 		out, _, _ = run(t, dir, "", "export", retiring.ID)
-		if !strings.Contains(out, "## Scenarios this story retires") || !strings.Contains(out, "Its test was `requires a postcode`") {
+		if !strings.Contains(out, "## Scenarios this story retires") || !strings.Contains(out, "Its test was `requires a postcode`") ||
+			!strings.Contains(out, "Removal not closed yet.") {
+			t.Fatalf("export =\n%s", out)
+		}
+		writeTests(t, dir)
+		mustRun(t, dir, "", nil, "close", old)
+		out, _, _ = run(t, dir, "", "export", retiring.ID)
+		if !strings.Contains(out, "Removed: aat found the test name gone from the file") {
 			t.Fatalf("export =\n%s", out)
 		}
 	})

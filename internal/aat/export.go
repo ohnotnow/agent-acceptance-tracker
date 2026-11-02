@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -70,31 +69,22 @@ func renderStory(st Story, qs []Question) string {
 		b.WriteString(st.Description + "\n\n")
 	}
 
-	// Scenarios and planned check-ins, in the story's order.
-	type item struct {
-		pos int
-		sc  *Scenario
-		q   *Question
-	}
-	var items []item
-	for i := range st.Scenarios {
-		items = append(items, item{pos: st.Scenarios[i].Position, sc: &st.Scenarios[i]})
-	}
+	// Scenarios and planned check-ins, in the story's order. qs has every
+	// question with its rounds; the steps have the planned ones without.
+	withRounds := map[string]Question{}
 	var asked []Question
-	for i := range qs {
-		if qs[i].Position > 0 {
-			items = append(items, item{pos: qs[i].Position, q: &qs[i]})
-		} else {
-			asked = append(asked, qs[i])
+	for _, q := range qs {
+		withRounds[q.ID] = q
+		if q.Position == 0 {
+			asked = append(asked, q)
 		}
 	}
-	sort.SliceStable(items, func(i, j int) bool { return items[i].pos < items[j].pos })
-	for n, it := range items {
-		if it.sc != nil {
-			renderScenario(&b, fmt.Sprintf("### %d. %s", n+1, it.sc.Title), *it.sc)
+	for n, step := range st.Steps {
+		if step.Scenario != nil {
+			renderScenario(&b, fmt.Sprintf("### %d. %s", n+1, step.Scenario.Title), *step.Scenario)
 		} else {
-			fmt.Fprintf(&b, "### %d. Check-in %s\n\n", n+1, it.q.ID)
-			renderQuestion(&b, *it.q)
+			fmt.Fprintf(&b, "### %d. Check-in %s\n\n", n+1, step.Question.ID)
+			renderQuestion(&b, withRounds[step.Question.ID])
 		}
 	}
 
@@ -155,6 +145,11 @@ func renderScenario(b *strings.Builder, heading string, sc Scenario) {
 		fmt.Fprintf(b, "Retired by story %s. Reason: %s\n\n", sc.RetiredBy, sc.Reason)
 		if sc.Test != "" {
 			fmt.Fprintf(b, "Its test was `%s` in `%s`; it should be removed with the behaviour.\n\n", sc.Test, sc.TestFile)
+		}
+		if sc.RemovedAt == "" {
+			b.WriteString("Removal not closed yet.\n\n")
+		} else {
+			fmt.Fprintf(b, "Removed: aat found the test name gone from the file (or no test to look for) on %s.\n\n", sc.RemovedAt)
 		}
 	}
 }

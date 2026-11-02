@@ -77,8 +77,30 @@ type storyOut struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
 	} `json:"feature"`
-	Scenarios []scenarioOut `json:"scenarios"`
+	Steps     []stepOut     `json:"steps"`
+	Scenarios []scenarioOut `json:"-"` // the scenario steps, in order, filled in from steps
 	Retires   []scenarioOut `json:"retires"`
+	Questions []questionOut `json:"questions"`
+}
+
+// stepOut is one step in a story's order: a scenario or a planned check-in.
+type stepOut struct {
+	Scenario *scenarioOut `json:"scenario"`
+	Question *questionOut `json:"question"`
+}
+
+func (s *storyOut) UnmarshalJSON(b []byte) error {
+	type plain storyOut
+	if err := json.Unmarshal(b, (*plain)(s)); err != nil {
+		return err
+	}
+	s.Scenarios = []scenarioOut{}
+	for _, st := range s.Steps {
+		if st.Scenario != nil {
+			s.Scenarios = append(s.Scenarios, *st.Scenario)
+		}
+	}
+	return nil
 }
 
 type scenarioOut struct {
@@ -92,6 +114,8 @@ type scenarioOut struct {
 	ReplacedBy  string `json:"replaced_by"`
 	RetiredBy   string `json:"retired_by"`
 	Reason      string `json:"reason"`
+	QuestionID  string `json:"question_id"`
+	RemovedAt   string `json:"removed_at"`
 	Replaces    *struct {
 		ID       string `json:"id"`
 		Title    string `json:"title"`
@@ -247,8 +271,8 @@ func TestAddingAStory(t *testing.T) {
 		if shown.Title != "Add xlsx alongside csv" || shown.Feature.ID != f.ID || shown.Feature.Title != "Exporting reports" {
 			t.Fatalf("story = %#v", shown)
 		}
-		if shown.Scenarios == nil || len(shown.Scenarios) != 0 {
-			t.Fatalf("scenarios = %#v, want an empty list", shown.Scenarios)
+		if shown.Steps == nil || len(shown.Steps) != 0 {
+			t.Fatalf("steps = %#v, want an empty list", shown.Steps)
 		}
 	})
 

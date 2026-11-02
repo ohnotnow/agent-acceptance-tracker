@@ -59,13 +59,7 @@ func TestClosingAScenarioWithItsTest(t *testing.T) {
 	t.Run("the story shows each scenario's status and test", func(t *testing.T) {
 		dir, story, ids := storyWithScenarios(t)
 		mustRun(t, dir, "", nil, "close", ids[0], "--test-file", "tests/Feature/ExportTest.php", "--test", "exports a report as xlsx")
-		var shown struct {
-			Scenarios []struct {
-				Status   string `json:"status"`
-				TestFile string `json:"test_file"`
-				Test     string `json:"test"`
-			} `json:"scenarios"`
-		}
+		var shown storyOut
 		mustRun(t, dir, "", &shown, "story", "show", story)
 		first, second := shown.Scenarios[0], shown.Scenarios[1]
 		if first.Status != "closed" || first.TestFile != "tests/Feature/ExportTest.php" || first.Test != "exports a report as xlsx" {

@@ -29,16 +29,20 @@ const usage = `usage: aat [--db path] <command> [flags]
   feature show <feature>                        a feature's current scenarios, and its retired ones
   story add --feature F --title T [--description D]
                                                 add a story (a piece of work) to a feature
-  story show <story>                            a story with its feature and scenarios
+  story show <story>                            a story's scenarios and planned check-ins in order,
+                                                its open questions and its retirements
   scenario add --story S --body B               add Gherkin scenarios to a story
   scenario show <scenario>                      one scenario, with what it replaced or what replaced it
   scenario replace <scenario> --story S --reason R --body B
                                                 replace a scenario with one new scenario in a story
   scenario retire <scenario> --story S --reason R
                                                 retire a scenario as part of a story
-  next --story S                                what to do next: a question asked mid-build, else the
-                                                first open scenario or planned check-in, in order
+  next --story S                                what to do next: a question asked mid-build, else a
+                                                retirement to remove, else the first open scenario
+                                                or planned check-in, in order
   close <scenario> --test-file F --test NAME    close a scenario with the test that proves it
+  close <scenario>                              close a retired scenario once its behaviour and
+                                                test are removed (checks the test name is gone)
   question ask --story S --body B               raise a question; it holds the story until resolved
   question plan --story S --body B              plan a check-in after everything in the story so far;
                                                 it holds the story once next reaches it
@@ -346,10 +350,14 @@ func next(ctx context.Context, store *Store, args []string) (any, error) {
 	if q != nil {
 		return map[string]any{"question": q}, nil
 	}
+	if sc != nil && sc.Status == "retired" {
+		return map[string]any{"retirement": sc}, nil
+	}
 	return map[string]any{"scenario": sc}, nil
 }
 
-// closeScenario closes a scenario with the test that proves it.
+// closeScenario closes a scenario with the test that proves it, or a retired
+// scenario once its test is gone.
 func closeScenario(ctx context.Context, store *Store, args []string, dir string) (any, error) {
 	id, rest, err := leadingID(args, "usage: aat close <scenario> --test-file F --test NAME")
 	if err != nil {
@@ -360,9 +368,7 @@ func closeScenario(ctx context.Context, store *Store, args []string, dir string)
 	if err := parseFlags(fs, rest); err != nil {
 		return nil, err
 	}
-	if *testFile == "" || strings.TrimSpace(*testName) == "" {
-		return nil, usageErr("aat close: --test-file and --test are both required")
-	}
+	withTest := *testFile != "" || *testName != ""
 
 	sc, err := store.GetScenario(ctx, id)
 	if err != nil {
@@ -374,7 +380,13 @@ func closeScenario(ctx context.Context, store *Store, args []string, dir string)
 	case "replaced":
 		return nil, conflictErr("scenario %q was replaced by %s; build that one instead", id, sc.ReplacedBy)
 	case "retired":
-		return nil, conflictErr("scenario %q is retired: %s", id, sc.Reason)
+		if withTest {
+			return nil, conflictErr("scenario %q is retired (%s); once its behaviour and test are removed, close it with no test: aat close %s", id, sc.Reason, id)
+		}
+		return closeRetirement(ctx, store, sc, dir)
+	}
+	if *testFile == "" || strings.TrimSpace(*testName) == "" {
+		return nil, usageErr("aat close: --test-file and --test are both required")
 	}
 	test, err := checkTest(dir, *testFile, *testName)
 	if err != nil {
@@ -393,6 +405,40 @@ func closeScenario(ctx context.Context, store *Store, args []string, dir string)
 		out["warnings"] = warnings
 	}
 	return out, nil
+}
+
+// closeRetirement records that a retired scenario's behaviour and test were
+// removed. The check is the close check reversed: the test name must no
+// longer be in its file. A retired scenario that was never built is checked
+// against the test of the rule it replaced, if any, which is the test still
+// standing for this behaviour.
+func closeRetirement(ctx context.Context, store *Store, sc Scenario, dir string) (any, error) {
+	if sc.RemovedAt != "" {
+		return nil, conflictErr("scenario %q is retired and its removal is already closed", sc.ID)
+	}
+	test := TestRef{File: sc.TestFile, Name: sc.Test}
+	if test.Name == "" && sc.Replaces != nil {
+		test = TestRef{File: sc.Replaces.TestFile, Name: sc.Replaces.Test}
+	}
+	check := "no test was recorded for this behaviour, so there was nothing to look for"
+	if test.Name != "" {
+		if testStillThere(dir, test) {
+			return nil, validationErr("test %q is still in %s; remove it with the retired behaviour, then close this again", test.Name, test.File)
+		}
+		check = fmt.Sprintf("test %q is no longer in %s", test.Name, test.File)
+	}
+	removedAt, err := store.RemoveRetired(ctx, sc.ID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"id": sc.ID, "status": sc.Status, "removed_at": removedAt, "check": check}, nil
+}
+
+// testStillThere reports whether a test's name is still in its file, which is
+// relative to the project root. A missing file means it isn't.
+func testStillThere(dir string, test TestRef) bool {
+	content, err := os.ReadFile(filepath.Join(projectRoot(dir), filepath.FromSlash(test.File)))
+	return err == nil && containsTestName(string(content), test.Name)
 }
 
 // testFlags adds the two flags that name the test proving a scenario.

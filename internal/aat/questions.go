@@ -210,9 +210,11 @@ func (s *Store) ResolveQuestion(ctx context.Context, id string, r Resolution) (Q
 }
 
 // Next returns what the story's builder should do next. A question asked
-// mid-build comes first, oldest first. Otherwise it is the first open item in
-// the story's order: a scenario or a planned check-in. Both are nil when the
-// story has nothing left.
+// mid-build comes first, oldest first. Then a scenario the story retired
+// whose removal isn't closed yet, so old behaviour goes before new is built;
+// it comes back as a scenario with status "retired". Otherwise it is the
+// first open item in the story's order: a scenario or a planned check-in.
+// Both are nil when the story has nothing left.
 func (s *Store) Next(ctx context.Context, storyID string) (*Scenario, *Question, error) {
 	if err := s.requireStory(ctx, storyID); err != nil {
 		return nil, nil, err
@@ -223,6 +225,13 @@ func (s *Store) Next(ctx context.Context, storyID string) (*Scenario, *Question,
 	}
 	if len(asked) > 0 {
 		return nil, &asked[0], nil
+	}
+	retiring, err := s.loadScenarios(ctx, "WHERE retired_by = ? AND removed_at IS NULL ORDER BY changed_at, rowid LIMIT 1", storyID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(retiring) > 0 {
+		return &retiring[0], nil, nil
 	}
 	planned, err := s.loadQuestions(ctx, "WHERE story_id = ? AND resolved_at IS NULL AND position IS NOT NULL ORDER BY position LIMIT 1", storyID)
 	if err != nil {

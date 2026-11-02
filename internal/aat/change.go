@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 )
 
 // Changing the spec later (foundation aat-AkRXV, "The spec outlives the
@@ -101,6 +99,23 @@ func (s *Store) RetireScenario(ctx context.Context, id, storyID, reason string) 
 		return Scenario{}, err
 	}
 	return s.GetScenario(ctx, id)
+}
+
+// RemoveRetired records that a retired scenario's behaviour and test have
+// been removed, and returns when.
+func (s *Store) RemoveRetired(ctx context.Context, id string) (string, error) {
+	at := now()
+	res, err := s.db.ExecContext(ctx, "UPDATE scenarios SET removed_at = ? WHERE id = ? AND retired_by IS NOT NULL AND removed_at IS NULL", at, id)
+	if err != nil {
+		return "", err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err == nil {
+			err = conflictErr("scenario %q isn't a retirement waiting to be removed", id)
+		}
+		return "", err
+	}
+	return at, nil
 }
 
 // FeatureView is a feature's spec as it stands, plus what it has retired.
@@ -199,8 +214,7 @@ func replacedTestWarnings(dir string, old *Replaced, closedWith TestRef) []strin
 	if old == nil || old.TestFile == "" || (old.TestFile == closedWith.File && old.Test == closedWith.Name) {
 		return nil
 	}
-	content, err := os.ReadFile(filepath.Join(projectRoot(dir), filepath.FromSlash(old.TestFile)))
-	if err != nil || !containsTestName(string(content), old.Test) {
+	if !testStillThere(dir, TestRef{File: old.TestFile, Name: old.Test}) {
 		return nil
 	}
 	return []string{fmt.Sprintf("the test for the rule this replaces, %q, is still in %s; change or remove it", old.Test, old.TestFile)}

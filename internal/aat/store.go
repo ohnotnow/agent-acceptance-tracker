@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -32,9 +33,25 @@ type Story struct {
 	Title       string     `json:"title"`
 	Description string     `json:"description,omitempty"`
 	CreatedAt   string     `json:"created_at"`
-	Scenarios   []Scenario `json:"scenarios"`
-	Questions   []Question `json:"questions"`         // open ones only, without rounds
+	Steps       []Step     `json:"steps"`             // scenarios and planned check-ins, in the story's order
+	Questions   []Question `json:"questions"`         // open questions asked mid-build, without rounds
 	Retires     []Scenario `json:"retires,omitempty"` // scenarios this story retired, whose behaviour and tests it removes
+}
+
+// Step is one place in a story's order: a scenario, or a planned check-in
+// (open or settled, without its rounds). It has the same shape as next's
+// output.
+type Step struct {
+	Scenario *Scenario `json:"scenario,omitempty"`
+	Question *Question `json:"question,omitempty"`
+}
+
+// Position is the step's place in the story's order.
+func (st Step) Position() int {
+	if st.Scenario != nil {
+		return st.Scenario.Position
+	}
+	return st.Question.Position
 }
 
 type Scenario struct {
@@ -54,6 +71,7 @@ type Scenario struct {
 	ReplacedBy string    `json:"replaced_by,omitempty"` // the scenario that replaced this one
 	RetiredBy  string    `json:"retired_by,omitempty"`  // the story that retired this one
 	Reason     string    `json:"reason,omitempty"`      // why it was replaced or retired
+	RemovedAt  string    `json:"removed_at,omitempty"`  // when a retired scenario's behaviour and test were removed
 	Replaces   *Replaced `json:"replaces,omitempty"`    // the scenario this one replaced
 }
 
@@ -151,6 +169,10 @@ var migrations = []migration{
 			ALTER TABLE scenarios ADD COLUMN retired_by TEXT REFERENCES stories(id);
 			ALTER TABLE scenarios ADD COLUMN change_reason TEXT NOT NULL DEFAULT '';
 			ALTER TABLE scenarios ADD COLUMN changed_at TEXT;`)
+		return err
+	}},
+	{6, "removing a retired scenario's behaviour is work, closed when its test is gone", func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE scenarios ADD COLUMN removed_at TEXT;`)
 		return err
 	}},
 }
@@ -298,13 +320,14 @@ func (s *Store) AddStory(ctx context.Context, featureID, title, description stri
 	if err != nil {
 		return Story{}, err
 	}
-	st := Story{ID: id, Feature: ref, Title: title, Description: description, CreatedAt: now(), Scenarios: []Scenario{}, Questions: []Question{}}
+	st := Story{ID: id, Feature: ref, Title: title, Description: description, CreatedAt: now(), Steps: []Step{}, Questions: []Question{}}
 	_, err = s.db.ExecContext(ctx, "INSERT INTO stories (id, feature_id, title, description, created_at) VALUES (?, ?, ?, ?, ?)",
 		st.ID, featureID, st.Title, st.Description, st.CreatedAt)
 	return st, err
 }
 
-// GetStory returns a story with its feature and its scenarios in order.
+// GetStory returns a story with its feature, and its scenarios and planned
+// check-ins in one list, in order.
 func (s *Store) GetStory(ctx context.Context, id string) (Story, error) {
 	st := Story{ID: id}
 	err := s.db.QueryRowContext(ctx, `
@@ -317,13 +340,26 @@ func (s *Store) GetStory(ctx context.Context, id string) (Story, error) {
 	if err != nil {
 		return st, err
 	}
-	if st.Scenarios, err = s.loadScenarios(ctx, "WHERE story_id = ? ORDER BY position", id); err != nil {
+	scs, err := s.loadScenarios(ctx, "WHERE story_id = ? ORDER BY position", id)
+	if err != nil {
 		return st, err
 	}
+	planned, err := s.loadQuestions(ctx, "WHERE story_id = ? AND position IS NOT NULL ORDER BY position", id)
+	if err != nil {
+		return st, err
+	}
+	st.Steps = make([]Step, 0, len(scs)+len(planned))
+	for i := range scs {
+		st.Steps = append(st.Steps, Step{Scenario: &scs[i]})
+	}
+	for i := range planned {
+		st.Steps = append(st.Steps, Step{Question: &planned[i]})
+	}
+	sort.SliceStable(st.Steps, func(i, j int) bool { return st.Steps[i].Position() < st.Steps[j].Position() })
 	if st.Retires, err = s.loadScenarios(ctx, "WHERE retired_by = ? ORDER BY changed_at, rowid", id); err != nil {
 		return st, err
 	}
-	st.Questions, err = s.loadQuestions(ctx, "WHERE story_id = ? AND resolved_at IS NULL ORDER BY created_at, rowid", id)
+	st.Questions, err = s.loadQuestions(ctx, "WHERE story_id = ? AND resolved_at IS NULL AND position IS NULL ORDER BY created_at, rowid", id)
 	return st, err
 }
 
@@ -486,7 +522,8 @@ func closeScenarioTx(ctx context.Context, tx *sql.Tx, id string, test TestRef, a
 func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) ([]Scenario, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, story_id, position, title, description, test_file, test_name, COALESCE(question_id, ''),
-			created_at, COALESCE(closed_at, ''), COALESCE(replaced_by, ''), COALESCE(retired_by, ''), change_reason
+			created_at, COALESCE(closed_at, ''), COALESCE(replaced_by, ''), COALESCE(retired_by, ''), change_reason,
+			COALESCE(removed_at, '')
 		FROM scenarios `+clause, args...)
 	if err != nil {
 		return nil, err
@@ -495,7 +532,8 @@ func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) (
 	for rows.Next() {
 		var sc Scenario
 		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Position, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.QuestionID,
-			&sc.CreatedAt, &sc.ClosedAt, &sc.ReplacedBy, &sc.RetiredBy, &sc.Reason); err != nil {
+			&sc.CreatedAt, &sc.ClosedAt, &sc.ReplacedBy, &sc.RetiredBy, &sc.Reason,
+			&sc.RemovedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
