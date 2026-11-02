@@ -322,6 +322,16 @@ aat scenario add --story <story> --body @more-scenarios.feature
   Leave out implementation words (component names, routes, classes): the
   spec should survive a change of framework, where only the tests get
   rewritten.
+- Before briefing a builder, offer the user a pre-flight check: the
+  `aat-preflight` agent reads the story, its scenarios and the code they
+  touch, and reports the gaps a builder would otherwise hit mid-build
+  (places not covered, "left alone" things that change meaning, missing
+  "nobody else", old tests and neighbouring behaviour, awkward cases,
+  things the user will need to see). Offer it; don't run it unasked. It
+  earns its time on a story with several scenarios or one that changes
+  existing behaviour, and is a nuisance on "make the button red". Put its
+  questions to the user in plain words, and fold the answers into the
+  story before the builder starts.
 - Brief the fresh session with the story id, and tell it to use this skill.
 - If you brief it by message from your own session, you are its
   coordinator. The user never sees the builder's messages to you, and

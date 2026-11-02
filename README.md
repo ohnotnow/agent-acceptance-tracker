@@ -67,7 +67,9 @@ contains the test name. It doesn't run your tests; that's the reviewer's
 job.
 
 The [skill](claude/skills/aat/SKILL.md) in this repo explains the workflow
-to a Claude Code agent.
+to a Claude Code agent. The [aat-preflight agent](claude/agents/aat-preflight.md)
+checks a freshly agreed story against the code before a builder starts, so
+gaps come up while you're still agreeing it rather than mid-build.
 
 ## Gherkin support
 
@@ -106,7 +108,8 @@ aat init
 `aat init` creates `.aat/aat.db` at the root of the git repository and adds
 `.aat/` to `.gitignore`.
 
-Copy `claude/skills/aat/` into `~/.claude/skills/`.
+Copy `claude/skills/aat/` into `~/.claude/skills/`, and
+`claude/agents/aat-preflight.md` into `~/.claude/agents/`.
 
 ## Commands
 
