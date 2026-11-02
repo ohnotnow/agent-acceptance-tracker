@@ -30,9 +30,20 @@ the story's description and all its scenarios. The description is the whole
 picture: you see every scenario from the start so you don't paint yourself
 into a corner. aat hands them out one at a time to keep the pace steady.
 
-If the story shows `retires`, it drops existing behaviour: remove that
-behaviour and the test named on each retired scenario as part of the story.
-`next` doesn't hand these out, so do them alongside the scenarios.
+If the story shows `retires`, it drops existing behaviour. `next` hands
+each one out before the story's new scenarios (see below).
+
+`steps` is the story in order: each step is `{"scenario": ...}` or, for a
+planned check-in, `{"question": ...}`, open or settled (a settled one has
+the note of what was decided). Closed scenarios show the test that closed
+them, so if you pick up a story someone else started, this tells you what
+is done; `git diff` tells you what code they changed. `questions` lists
+only open questions raised mid-build.
+
+Before you change anything, run the project's whole test suite and note
+the result. That is your baseline: if something fails later, you can tell
+whether you broke it or it was already broken. If the baseline isn't
+green, tell the user before you start.
 
 Then loop:
 
@@ -42,22 +53,41 @@ Then loop:
    - If it passes straight away (the behaviour came free with earlier work),
      show that it can fail: break the code on purpose, see the test go red,
      then put the code back. A test that has never failed proves nothing.
+     This is the step most likely to leave the app broken, so make the
+     break one small edit with the Edit tool, undo it with the same tool,
+     run the test again to see it pass, and check `git diff` shows only the
+     changes you meant to make. Don't copy files aside to restore later.
    - Write the code to make it pass, and run it again to see it pass.
    - Don't write tests for later scenarios ahead of time. The pace of one
      scenario at a time is the point, and only you can keep it.
    - Name the test after the scenario where the framework allows, so a
      reviewer can match them up.
+   - Run the whole suite, not just the new test, and compare it with your
+     baseline. aat only knows about tests written through it: in an app
+     built before aat, the old rules live in old tests that nothing points
+     you to. If an old test now fails because it asserts behaviour this
+     story has just changed, update it as part of the change and say so
+     in the note when you close or resolve. Any other new failure is
+     yours to fix before closing.
    - Close it: `aat close <scenario> --test-file <file> --test "<test name>"`.
    - If the scenario has `replaces`, it changes an existing rule. `replaces`
      shows the old rule, why it changed, and the test that proved it. Write
      the new test first as usual, then change the code and change or remove
      the old test. `aat close` warns if the old test name is still in its
      file.
-3. If it returns `{"question": ...}`, stop building and put the question to
+3. If it returns `{"retirement": ...}`, remove that behaviour and its test.
+   The test is the one named on the scenario, or, if it was never built,
+   the one under its `replaces`. Run the remaining tests to see nothing else
+   relied on it. Then close it with no test:
+   `aat close <scenario>`. aat checks the old test name is gone from its
+   file and refuses while it is still there.
+4. If it returns `{"question": ...}`, stop building and put the question to
    the user (see below). Don't carry on with other scenarios meanwhile.
-4. If it returns `{"scenario": null}`, the story is finished. If you noticed
-   gaps along the way, raise them now as questions; they hold the story
-   again until settled. Then tell the user it is ready for review.
+5. If it returns `{"scenario": null}`, the story is finished. Run the
+   whole suite one last time and compare it with your baseline. If you
+   noticed gaps along the way, raise them now as questions; they hold the
+   story again until settled. Then tell the user it is ready for review,
+   with the suite's result.
    `aat export <story> --output review.md` writes a markdown review of the
    whole story: each scenario with the test that claims to prove it, and
    every question with the user's answers.
@@ -76,6 +106,13 @@ name in the file". Never describe a scenario as "verified": running the test is 
 reviewer's job. If the same test already closes another scenario, `close`
 still works but warns you; make sure the test really proves both.
 
+Because the check is a text search, `--test` must match the name as it is
+written in the file. A name with an escaped quote, such as
+`'adding a customer\'s address'` in PHP, holds the backslash in the file
+text, so `close` won't find "adding a customer's address". Pick a quoting
+style that needs no escapes (double quotes, here), or pass the name exactly
+as written.
+
 ### Don't change the agreed spec yourself
 
 Don't add, change, reorder or regroup scenarios on your own. If something in
@@ -86,6 +123,17 @@ the spec is wrong or missing, that is a question for the user.
 Specs are rarely perfect. When you hit a genuine gap ("nobody said what
 happens with a duplicate name"), raise a question. Don't quietly handle the
 gap, and don't ignore it.
+
+Gaps include:
+
+- A change you need to make that no scenario covers, such as a screen that
+  shows the new data. Ask before making it, rather than making it and
+  mentioning it afterwards.
+- Existing behaviour next to the story that now disagrees with it (the
+  story says a blank import cell leaves an address alone, but the old code
+  still wipes the name on a blank cell).
+- Two scenarios that could each be read as proving the other. Ask which
+  one is meant, rather than picking a reading.
 
 ```bash
 aat question ask --story <story> --body "When someone saves a second report with the same name, should we refuse it, or add (2) to the name? I'd suggest refusing it with a message."
@@ -113,7 +161,35 @@ the user the export menu"). Treat it exactly like a question you raised.
    no change of behaviour ("right-align the header") needs no scenario and
    no test.
 5. Only the user says yes. Silence or "hmm" is not yes. aat can't tell who
-   typed a command, so this is a working agreement, not a lock.
+   typed a command, so this is a working agreement, not a lock. If the
+   user says yes to your suggestion before you have built it, and there is
+   nothing new for them to see (a change to stored data, say), that yes
+   stands: build it test first, then resolve, and say in the note that the
+   user agreed before it was built.
+
+### When another session is coordinating
+
+If your instructions came as a message from another Claude session (Claude
+Code marks it as coming from another session, with that session's name),
+that session is coordinating the work, and it is where the user is
+talking. Questions then go through it:
+
+1. Raise the question in aat as usual (or note the check-in `next` handed
+   you). Then message the coordinating session, replying to the address
+   your instructions came from, with the story id, the question id, and
+   one line on what it is about. For a check-in, also say what the user
+   should look at and how to reach it (a URL their phone can open, say).
+2. Wait. The coordinating session puts the question to the user and
+   records each reply with `aat question answer`. When it tells you to
+   carry on, read the answers with `aat question show <question>`.
+3. An answer recorded in aat is the user's answer, whoever typed the
+   command. Claude Code's rule that a message from another session is not
+   your user's approval is about permission prompts; it never lets you
+   skip one. It doesn't stop you acting on an answer recorded in aat.
+4. You still do the rounds' work (trying things, tests first) and resolve
+   the question yourself once the user has said yes.
+5. If your message can't be delivered (the coordinating session has
+   closed), put the question to the user directly in your own session.
 
 ### Settling the question
 
@@ -163,16 +239,38 @@ aat question plan --story <story> --body "Show the user the export menu. Does th
 aat scenario add --story <story> --body @more-scenarios.feature
 ```
 
+- Before writing scenarios, read the code for every place the change
+  touches: each screen and form, previews and confirmation pages, imports,
+  exports, emails, and every way a record can be created or changed. Give
+  each one a scenario, or say in the story description that it is
+  deliberately left alone. Anything not covered is a guess for the builder.
+- When the same data can arrive by more than one route (a form and an
+  import, say), write a scenario that the routes record it identically,
+  including when a field is left empty. What "empty" is stored as belongs
+  in the project's own rules (its CLAUDE.md), not in the scenario.
 - The story description is what the building session reads first: what is
   wanted and why, and anything known that doesn't fit a scenario.
 - Scenarios are handed out in the order they were added.
 - `question plan` puts a check-in after everything added so far. The builder
   stops there and asks the user, however well the build is going.
+- Say where a result can be seen. "Then the run shows the address" could
+  mean the address is saved, or that it appears on a particular screen; a
+  builder will pick one, and the next scenario may then be proved already.
+  Name the screen, or say "is saved".
+- In a planned check-in's text, say what the user will be shown and
+  anything that has to happen first (a migration, fresh test data, the app
+  served somewhere their phone can reach), so the builder can get it ready.
 - Write scenarios about behaviour a user can see, in the user's language.
   Leave out implementation words (component names, routes, classes): the
   spec should survive a change of framework, where only the tests get
   rewritten.
 - Brief the fresh session with the story id, and tell it to use this skill.
+- If you brief it by message from your own session, you are its
+  coordinator. When it messages you about a question, read the question
+  (`aat question show`) and the story, and put it to the user with enough
+  context to answer: what is being built, what they are being asked, and
+  your suggestion. Record each reply in the user's words with
+  `aat question answer`, then message the builder to carry on.
 
 ### Changing behaviour that already exists
 
@@ -217,9 +315,10 @@ Scenario: Exporting an empty report
 
 | Command | What it does |
 | --- | --- |
-| `aat story show <story>` | The story, its feature, its scenarios in order (status, test, position) and its open questions |
-| `aat next --story S` | A question asked mid-build if there is one, otherwise the first open scenario or planned check-in |
+| `aat story show <story>` | The story, its feature, its steps in order (scenarios with status and test, and planned check-ins), open questions raised mid-build, and the scenarios it retires |
+| `aat next --story S` | A question asked mid-build if there is one, then a retirement to remove, otherwise the first open scenario or planned check-in |
 | `aat close <scenario> --test-file F --test NAME` | Close a scenario with the test that proves it |
+| `aat close <scenario>` | Close a retired scenario once its behaviour and test are removed |
 | `aat question ask --story S --body B` | Raise a question now; it holds the story |
 | `aat question plan --story S --body B` | Plan a check-in after everything added so far |
 | `aat question answer <question> --body B` | Record one round of the user's answer |

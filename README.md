@@ -56,7 +56,9 @@ Given/When/Then example of behaviour.
 4. When `aat next` has nothing left, `aat export` writes the story as a
    markdown review.
 5. A later story can replace or retire a scenario. The old scenario stays in
-   the record, marked, with the reason.
+   the record, marked, with the reason. Removing a retired behaviour is
+   work like any other: `aat next` hands it out, and `aat close` without a
+   test closes it once the old test name is gone from its file.
 
 `aat close` only checks that the test file is inside the project and
 contains the test name. It doesn't run your tests; that's the reviewer's
@@ -113,13 +115,14 @@ Copy `claude/skills/aat/` into `~/.claude/skills/`.
 | `aat feature list` | List features |
 | `aat feature show <feature>` | A feature's current scenarios, and its retired ones |
 | `aat story add --feature F --title T [--description D]` | Add a story to a feature |
-| `aat story show <story>` | A story with its scenarios and open questions |
+| `aat story show <story>` | A story's scenarios and planned check-ins in order, its open questions and its retirements |
 | `aat scenario add --story S --body B` | Add Gherkin scenarios to a story |
 | `aat scenario show <scenario>` | One scenario, with what it replaced or what replaced it |
 | `aat scenario replace <scenario> --story S --reason R --body B` | Replace a scenario with a new one, as part of a story |
 | `aat scenario retire <scenario> --story S --reason R` | Retire a scenario, as part of a story |
 | `aat next --story S` | What to build or ask next |
 | `aat close <scenario> --test-file F --test NAME` | Close a scenario with the test that proves it |
+| `aat close <scenario>` | Close a retired scenario once its behaviour and test are removed |
 | `aat question ask --story S --body B` | Raise a question; it holds the story until resolved |
 | `aat question plan --story S --body B` | Plan a check-in after the story's scenarios so far |
 | `aat question answer <question> --body B` | Record one round of the user's answer |
