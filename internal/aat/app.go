@@ -31,9 +31,19 @@ const usage = `usage: aat [--db path] <command> [flags]
                                                 add a story (a piece of work) to a feature
   story show <story>                            a story's scenarios and planned check-ins in order,
                                                 its open questions and its retirements
+  story edit <story> [--title T] [--description D]
+                                                change a story's title or description until it is
+                                                accepted
   story accept <story> --note N                 record that the user reviewed the finished story
                                                 and accepted it; it then takes no more work
-  scenario add --story S --body B               add Gherkin scenarios to a story
+  scenario add --story S --body B [--before STEP]
+                                                add Gherkin scenarios to a story, at the end or in
+                                                front of a step not yet built
+  scenario edit <scenario> --body B             rewrite a scenario not yet closed, in place
+  scenario delete <scenario>                    delete a scenario never built (not one that replaces
+                                                a rule or came out of a question)
+  scenario move <scenario> --before STEP        move a scenario not yet closed in front of another
+                                                step not yet built or settled
   scenario show <scenario>                      one scenario, with what it replaced or what replaced it
   scenario replace <scenario> --story S --reason R --body B
                                                 replace a scenario with one new scenario in a story
@@ -46,8 +56,13 @@ const usage = `usage: aat [--db path] <command> [flags]
   close <scenario>                              close a retired scenario once its behaviour and
                                                 test are removed (checks the test name is gone)
   question ask --story S --body B               raise a question; it holds the story until resolved
-  question plan --story S --body B              plan a check-in after everything in the story so far;
-                                                it holds the story once next reaches it
+  question plan --story S --body B [--before STEP]
+                                                plan a check-in after everything in the story so far,
+                                                or in front of a step not yet built; it holds the
+                                                story once next reaches it
+  question edit <question> --body B             rewrite an open question nobody has answered yet
+  question move <question> --before STEP        move an open check-in in front of another step not
+                                                yet built or settled
   question answer <question> --body B           record one round of the user's answer
   question show <question>                      a question with all its rounds and any corrections
   question correct <question> (--round N | --resolve-note) --body T --reason R
@@ -144,6 +159,8 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 		return store.GetStory(ctx, rest[0])
 	case "story accept":
 		return storyAccept(ctx, store, rest, stdin)
+	case "story edit":
+		return storyEdit(ctx, store, rest, stdin)
 	case "scenario add":
 		return scenarioAdd(ctx, store, rest, stdin)
 	case "scenario show":
@@ -151,6 +168,14 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 			return nil, usageErr("usage: aat scenario show <scenario>")
 		}
 		return store.GetScenario(ctx, rest[0])
+	case "scenario edit":
+		return scenarioEdit(ctx, store, rest, stdin)
+	case "scenario delete":
+		return scenarioDelete(ctx, store, rest)
+	case "scenario move":
+		return stepMove(ctx, "scenario move", rest, func(ctx context.Context, id, before string) (any, error) {
+			return store.MoveScenario(ctx, id, before)
+		})
 	case "scenario replace":
 		return scenarioReplace(ctx, store, rest, stdin)
 	case "scenario retire":
@@ -160,9 +185,15 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 	case "close":
 		return closeScenario(ctx, store, rest, dir)
 	case "question ask":
-		return questionAdd(ctx, "question ask", rest, stdin, store.AskQuestion)
+		return questionAdd(ctx, store, "question ask", rest, stdin, false)
 	case "question plan":
-		return questionAdd(ctx, "question plan", rest, stdin, store.PlanQuestion)
+		return questionAdd(ctx, store, "question plan", rest, stdin, true)
+	case "question edit":
+		return questionEdit(ctx, store, rest, stdin)
+	case "question move":
+		return stepMove(ctx, "question move", rest, func(ctx context.Context, id, before string) (any, error) {
+			return store.MoveCheckIn(ctx, id, before)
+		})
 	case "question answer":
 		return questionAnswer(ctx, store, rest, stdin)
 	case "question resolve":
@@ -345,6 +376,7 @@ func scenarioAdd(ctx context.Context, store *Store, args []string, stdin io.Read
 	fs := newFlags("scenario add")
 	story := fs.String("story", "", "story id")
 	body := fs.String("body", "", "Gherkin scenarios")
+	before := fs.String("before", "", "the step to put the scenarios in front of")
 	if err := parseFlags(fs, args); err != nil {
 		return nil, err
 	}
@@ -359,7 +391,7 @@ func scenarioAdd(ctx context.Context, store *Store, args []string, stdin io.Read
 	if err != nil {
 		return nil, err
 	}
-	added, err := store.AddScenarios(ctx, *story, parsed)
+	added, err := store.AddScenarios(ctx, *story, parsed, *before)
 	if err != nil {
 		return nil, err
 	}
@@ -388,6 +420,11 @@ func next(ctx context.Context, store *Store, args []string) (any, error) {
 	}
 	if sc != nil && sc.Status == "retired" {
 		return map[string]any{"retirement": sc}, nil
+	}
+	if sc != nil {
+		if err := store.MarkHandedOut(ctx, sc); err != nil {
+			return nil, err
+		}
 	}
 	return map[string]any{"scenario": sc}, nil
 }

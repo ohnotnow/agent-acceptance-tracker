@@ -66,8 +66,11 @@ Given/When/Then example of behaviour.
 contains the test name. It doesn't run your tests; that's the reviewer's
 job.
 
-The [skill](claude/skills/aat/SKILL.md) in this repo explains the workflow
-to a Claude Code agent. The [aat-preflight agent](claude/agents/aat-preflight.md)
+Two skills in this repo explain the workflow to a Claude Code agent. The
+[aat-writing skill](claude/skills/aat-writing/SKILL.md) is for the session
+that agrees a story with you, checks it, briefs and coordinates the
+builder, and reviews the result. The [aat skill](claude/skills/aat/SKILL.md)
+is for the session that builds it. The [aat-preflight agent](claude/agents/aat-preflight.md)
 checks a freshly agreed story against the code before a builder starts, so
 gaps come up while you're still agreeing it rather than mid-build.
 
@@ -108,8 +111,9 @@ aat init
 `aat init` creates `.aat/aat.db` at the root of the git repository and adds
 `.aat/` to `.gitignore`.
 
-Copy `claude/skills/aat/` into `~/.claude/skills/`, and
-`claude/agents/aat-preflight.md` into `~/.claude/agents/`.
+Copy `claude/skills/aat/` and `claude/skills/aat-writing/` into
+`~/.claude/skills/`, and `claude/agents/aat-preflight.md` into
+`~/.claude/agents/`. The preflight agent loads the aat-writing skill.
 
 ## Commands
 
@@ -120,9 +124,13 @@ Copy `claude/skills/aat/` into `~/.claude/skills/`, and
 | `aat feature list` | List features |
 | `aat feature show <feature>` | A feature's current scenarios, and its retired ones |
 | `aat story add --feature F --title T [--description D]` | Add a story to a feature |
+| `aat story edit <story> [--title T] [--description D]` | Change a story's title or description until it is accepted |
 | `aat story accept <story> --note N` | Record that you reviewed a finished story and accepted it |
 | `aat story show <story>` | A story's scenarios and planned check-ins in order, its open questions and its retirements |
-| `aat scenario add --story S --body B` | Add Gherkin scenarios to a story |
+| `aat scenario add --story S --body B [--before STEP]` | Add Gherkin scenarios to a story, at the end or in front of a step not yet built |
+| `aat scenario edit <scenario> --body B` | Rewrite a scenario that isn't closed yet, in place |
+| `aat scenario delete <scenario>` | Delete a scenario that was never built, unless it replaces a rule or came out of a question |
+| `aat scenario move <scenario> --before STEP` | Move a scenario that isn't closed yet in front of another step not yet built |
 | `aat scenario show <scenario>` | One scenario, with what it replaced or what replaced it |
 | `aat scenario replace <scenario> --story S --reason R --body B` | Replace a scenario with a new one, as part of a story |
 | `aat scenario retire <scenario> --story S --reason R` | Retire a scenario, as part of a story |
@@ -130,7 +138,9 @@ Copy `claude/skills/aat/` into `~/.claude/skills/`, and
 | `aat close <scenario> --test-file F --test NAME` | Close a scenario with the test that proves it |
 | `aat close <scenario>` | Close a retired scenario once its behaviour and test are removed |
 | `aat question ask --story S --body B` | Raise a question; it holds the story until resolved |
-| `aat question plan --story S --body B` | Plan a check-in after the story's scenarios so far |
+| `aat question plan --story S --body B [--before STEP]` | Plan a check-in after the story's scenarios so far, or in front of a step not yet built |
+| `aat question edit <question> --body B` | Rewrite an open question nobody has answered yet |
+| `aat question move <question> --before STEP` | Move an open check-in in front of another step not yet built |
 | `aat question answer <question> --body B` | Record one round of the user's answer |
 | `aat question show <question>` | A question with all its rounds and any corrections |
 | `aat question correct <question> (--round N \| --resolve-note) --body T --reason R` | Correct a recorded answer or resolve note; the old text and the reason stay on the record |

@@ -70,11 +70,12 @@ type Scenario struct {
 	CreatedAt   string `json:"created_at"`
 	ClosedAt    string `json:"closed_at,omitempty"`
 
-	ReplacedBy string    `json:"replaced_by,omitempty"` // the scenario that replaced this one
-	RetiredBy  string    `json:"retired_by,omitempty"`  // the story that retired this one
-	Reason     string    `json:"reason,omitempty"`      // why it was replaced or retired
-	RemovedAt  string    `json:"removed_at,omitempty"`  // when a retired scenario's behaviour and test were removed
-	Replaces   *Replaced `json:"replaces,omitempty"`    // the scenario this one replaced
+	ReplacedBy string    `json:"replaced_by,omitempty"`   // the scenario that replaced this one
+	RetiredBy  string    `json:"retired_by,omitempty"`    // the story that retired this one
+	Reason     string    `json:"reason,omitempty"`        // why it was replaced or retired
+	RemovedAt  string    `json:"removed_at,omitempty"`    // when a retired scenario's behaviour and test were removed
+	HandedOut  string    `json:"handed_out_at,omitempty"` // when next first handed it to the builder; from then on it is no longer a draft
+	Replaces   *Replaced `json:"replaces,omitempty"`      // the scenario this one replaced
 }
 
 // Replaced is the scenario a newer one replaced: its rule, the test that
@@ -192,6 +193,10 @@ var migrations = []migration{
 				reason      TEXT NOT NULL,
 				created_at  TEXT NOT NULL
 			);`)
+		return err
+	}},
+	{9, "when next hands a scenario to the builder", func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE scenarios ADD COLUMN handed_out_at TEXT;`)
 		return err
 	}},
 }
@@ -430,15 +435,23 @@ func (s *Store) AcceptStory(ctx context.Context, id, note string) (Story, error)
 	return s.GetStory(ctx, id)
 }
 
-// AddScenarios appends scenarios to the end of a story, all or nothing.
-func (s *Store) AddScenarios(ctx context.Context, storyID string, parsed []ParsedScenario) ([]Scenario, error) {
+// AddScenarios adds scenarios to a story, all or nothing: at the end, or in
+// front of the draft step before when it is set.
+func (s *Store) AddScenarios(ctx context.Context, storyID string, parsed []ParsedScenario, before string) ([]Scenario, error) {
 	if err := s.requireOpenStory(ctx, storyID); err != nil {
 		return nil, err
+	}
+	at := 0
+	if before != "" {
+		var err error
+		if at, err = s.placeBefore(ctx, storyID, before); err != nil {
+			return nil, err
+		}
 	}
 	var added []Scenario
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		added, err = insertScenarios(ctx, tx, storyID, parsed, "", 0)
+		added, err = insertScenarios(ctx, tx, storyID, parsed, "", at)
 		return err
 	})
 	return added, err
@@ -474,15 +487,22 @@ func insertScenarios(ctx context.Context, tx *sql.Tx, storyID string, parsed []P
 			sc.ID, storyID, sc.Position, sc.Title, sc.Description, qid, sc.CreatedAt); err != nil {
 			return nil, err
 		}
-		for i, l := range p.Lines {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO scenario_lines (scenario_id, position, keyword, text) VALUES (?, ?, ?, ?)",
-				sc.ID, i+1, l.Keyword, l.Text); err != nil {
-				return nil, err
-			}
+		if err := insertLines(ctx, tx, sc.ID, p.Lines); err != nil {
+			return nil, err
 		}
 		added = append(added, sc)
 	}
 	return added, nil
+}
+
+func insertLines(ctx context.Context, tx *sql.Tx, scenarioID string, lines []Line) error {
+	for i, l := range lines {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO scenario_lines (scenario_id, position, keyword, text) VALUES (?, ?, ?, ?)",
+			scenarioID, i+1, l.Keyword, l.Text); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // makeRoom moves everything at or after position at in a story's order along
@@ -581,7 +601,7 @@ func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) (
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, story_id, position, title, description, test_file, test_name, COALESCE(question_id, ''),
 			created_at, COALESCE(closed_at, ''), COALESCE(replaced_by, ''), COALESCE(retired_by, ''), change_reason,
-			COALESCE(removed_at, '')
+			COALESCE(removed_at, ''), COALESCE(handed_out_at, '')
 		FROM scenarios `+clause, args...)
 	if err != nil {
 		return nil, err
@@ -591,7 +611,7 @@ func (s *Store) loadScenarios(ctx context.Context, clause string, args ...any) (
 		var sc Scenario
 		if err := rows.Scan(&sc.ID, &sc.StoryID, &sc.Position, &sc.Title, &sc.Description, &sc.TestFile, &sc.Test, &sc.QuestionID,
 			&sc.CreatedAt, &sc.ClosedAt, &sc.ReplacedBy, &sc.RetiredBy, &sc.Reason,
-			&sc.RemovedAt); err != nil {
+			&sc.RemovedAt, &sc.HandedOut); err != nil {
 			rows.Close()
 			return nil, err
 		}

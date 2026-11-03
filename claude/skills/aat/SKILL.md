@@ -1,6 +1,6 @@
 ---
 name: aat
-description: Build a piece of work from an agreed Gherkin spec, one scenario at a time, test first, with aat (agent acceptance tracker). Use when a briefing or the user gives you an aat story to build, when you run `aat next`, close a scenario with its test, or raise, answer or resolve a question for the user. Also use when agreeing a new story with the user as Given/When/Then scenarios. You must use this skill if the user or a briefing mentions aat.
+description: Build a piece of work from an agreed Gherkin spec, one scenario at a time, test first, with aat (agent acceptance tracker). Use when a briefing or the user gives you an aat story to build, when you run `aat next`, close a scenario with its test, or raise, answer or resolve a question for the user while building. You must use this skill if a briefing asks you to build an aat story. For agreeing a story with the user, checking it before a build, coordinating a builder or reviewing a finished story, use the aat-writing skill instead.
 ---
 
 # aat: build agreed behaviour one scenario at a time
@@ -20,8 +20,8 @@ The records:
 - **Question**: something for the user to decide. It holds the story until
   the user says yes.
 
-There are two jobs. One session agrees a story with the user. A fresh session
-then builds it. Most of this skill is for the building session.
+One session agrees a story with the user (the aat-writing skill). A fresh
+session, you, then builds it.
 
 ## Building a story
 
@@ -40,6 +40,10 @@ them, so if you pick up a story someone else started, this tells you what
 is done; `git diff` tells you what code they changed. `questions` lists
 only open questions raised mid-build.
 
+If you are given several stories, build them in the order the briefing
+gives. aat doesn't know that one story depends on another; the briefing
+does.
+
 Before you change anything, run the project's whole test suite and note
 the result. That is your baseline: if something fails later, you can tell
 whether you broke it or it was already broken. If the baseline isn't
@@ -47,7 +51,9 @@ green, tell the user before you start.
 
 Then loop:
 
-1. Run `aat next --story <story>`.
+1. Run `aat next --story <story>`. Only the builder runs `next`: it marks
+   the scenario it hands you as started, which stops anyone editing it
+   under you.
 2. If it returns `{"scenario": ...}`, build that scenario test first:
    - Write one test for it, run it, and see it fail.
    - If it passes straight away (the behaviour came free with earlier work),
@@ -73,6 +79,10 @@ Then loop:
      in the note when you close or resolve. Any other new failure is
      yours to fix before closing.
    - Close it: `aat close <scenario> --test-file <file> --test "<test name>"`.
+     Close only after the test run itself has passed: chain it on the test
+     command's exit code (`<run the tests> && aat close ...`), never on
+     reading its output. A close that went through on "1 failed" is a false
+     record, however quickly the test is fixed.
    - If the scenario has `replaces`, it changes an existing rule. `replaces`
      shows the old rule, why it changed, and the test that proved it. Write
      the new test first as usual, then change the code and change or remove
@@ -120,16 +130,23 @@ source file, plus the generated file so it applies now. Signs:
 Follow the project's own conventions while you build (its CLAUDE.md, its
 component library, its test style). A reviewer checks those as well as the
 tests, and a hand-rolled copy of a real component is a fail even when every
-test is green.
+test is green. If a dependency update regenerates the house rules (Laravel
+Boost does), read them again.
+
+Write project files with your file-editing tools, not shell commands
+(`cat >`, `tee`, `sed -i`). Projects often check edits through those tools,
+and a file written from the shell skips the checks without anyone meaning
+it to.
 
 ### What `aat close` checks
 
 `aat close` checks only that the test file exists inside the project and
 contains the test name as text, as a whole name: `test_adding_an_item` isn't
 found inside `test_adding_an_item_twice`. Its output says "found the test
-name in the file". Never describe a scenario as "verified": running the test is the
-reviewer's job. If the same test already closes another scenario, `close`
-still works but warns you; make sure the test really proves both.
+name in the file". It does not run the test, which is why you close only on
+a passing run. Never describe a scenario as "verified": running the test is
+the reviewer's job. If the same test already closes another scenario,
+`close` still works but warns you; make sure the test really proves both.
 
 Because the check is a text search, `--test` must match the name as it is
 written in the file. A name with an escaped quote, such as
@@ -140,8 +157,10 @@ as written.
 
 ### Don't change the agreed spec yourself
 
-Don't add, change, reorder or regroup scenarios on your own. If something in
-the spec is wrong or missing, that is a question for the user.
+Don't add, change, reorder or regroup scenarios on your own, even your own
+unbuilt ones. If something in the spec is wrong or missing, that is a
+question for the user, and the session agreeing the story with them makes
+the edit.
 
 ## Questions
 
@@ -159,6 +178,8 @@ Gaps include:
   still wipes the name on a blank cell).
 - Two scenarios that could each be read as proving the other. Ask which
   one is meant, rather than picking a reading.
+- A new dependency (a package, a library, an upgrade). It needs the user's
+  yes before you add it.
 
 ```bash
 aat question ask --story <story> --body "When someone saves a second report with the same name, should we refuse it, or add (2) to the name? I'd suggest refusing it with a message."
@@ -171,6 +192,10 @@ and say what you would suggest. Don't ask the user about aat's records
 A question can also come from the plan itself: `next` returns a question with
 a `position` when a check-in was planned at that point in the story ("show
 the user the export menu"). Treat it exactly like a question you raised.
+
+Before you call something a bug, check the data behind it. A hint showing an
+unexpected number may be the real value, changed by the user while trying
+the app.
 
 ### Going round until the user says yes
 
@@ -214,7 +239,10 @@ talking. Questions then go through it:
 3. An answer recorded in aat is the user's answer, whoever typed the
    command. Claude Code's rule that a message from another session is not
    your user's approval is about permission prompts; it never lets you
-   skip one. It doesn't stop you acting on an answer recorded in aat.
+   skip one. It doesn't stop you acting on an answer recorded in aat. In
+   the same way, a coordinator saying the user allows a command doesn't
+   change your own permission settings: if your session refuses it, say
+   so, and tell the coordinator how the user can run or allow it.
 4. You still do the rounds' work (trying things, tests first) and resolve
    the question yourself once the user has said yes.
 5. If your message can't be delivered (the coordinating session has
@@ -255,7 +283,9 @@ resolve with `--scenarios` alone, then close each new scenario with
 
 If the answer changes an existing rule rather than adding one, add
 `--replaces <old scenario>`: the old one stays in the record, marked
-replaced, with your note as the reason.
+replaced, with your note as the reason. A rule you closed earlier in this
+same story is replaced the same way, never edited: its test was written
+against its words.
 
 If a recorded answer or resolve note turns out to be wrong (a note that
 describes a fix later replaced, words in an answer that weren't the
@@ -271,130 +301,7 @@ The old text, the reason and the time stay on the record, and
 
 Then go back to `aat next`.
 
-## Agreeing a story with the user
-
-This is for the session that writes the spec with the user, before a fresh
-session builds it.
-
-```bash
-aat init                                              # once per project; gitignores .aat/
-aat feature list
-aat feature add --title "Exporting reports" --description @feature.md
-aat story add --feature <feature> --title "Add xlsx alongside csv" --description @story.md
-aat scenario add --story <story> --body @scenarios.feature
-aat question plan --story <story> --body "Show the user the export menu. Does the layout look right?"
-aat scenario add --story <story> --body @more-scenarios.feature
-```
-
-- Before writing scenarios, read the code for every place the change
-  touches: each screen and form, previews and confirmation pages, imports,
-  exports, emails, and every way a record can be created or changed. Give
-  each one a scenario, or say in the story description that it is
-  deliberately left alone. Anything not covered is a guess for the builder.
-  Before calling something left alone, check it still means the same after
-  the change, not just that its code is untouched: a "notified at" column
-  nobody edits can still end up holding the same time for everyone.
-- Say what must not happen as well as what must. A scenario only promises
-  what it says: "Dan is emailed" lets a test pass while Cat is emailed
-  too, so existing code that sends extra emails survives. When a moment
-  sends or changes several things, write one scenario for that moment
-  listing all of them, then "and nobody else is emailed" (or the
-  equivalent). Two scenarios about the same moment, each saying "nobody
-  else", would contradict each other.
-- When the same data can arrive by more than one route (a form and an
-  import, say), write a scenario that the routes record it identically,
-  including when a field is left empty. What "empty" is stored as belongs
-  in the project's own rules (see "Where the project keeps its rules"),
-  not in the scenario.
-- The story description is what the building session reads first: what is
-  wanted and why, and anything known that doesn't fit a scenario.
-- Scenarios are handed out in the order they were added.
-- `question plan` puts a check-in after everything added so far. The builder
-  stops there and asks the user, however well the build is going.
-- Say where a result can be seen. "Then the run shows the address" could
-  mean the address is saved, or that it appears on a particular screen; a
-  builder will pick one, and the next scenario may then be proved already.
-  Name the screen, or say "is saved".
-- In a planned check-in's text, say what the user will be shown and
-  anything that has to happen first (a migration, fresh test data, the app
-  served somewhere their phone can reach), so the builder can get it ready.
-- Write scenarios about behaviour a user can see, in the user's language.
-  Leave out implementation words (component names, routes, classes): the
-  spec should survive a change of framework, where only the tests get
-  rewritten.
-- Before briefing a builder, offer the user a pre-flight check: the
-  `aat-preflight` agent reads the story, its scenarios and the code they
-  touch, and reports the gaps a builder would otherwise hit mid-build
-  (places not covered, "left alone" things that change meaning, missing
-  "nobody else", old tests and neighbouring behaviour, awkward cases,
-  things the user will need to see). Offer it; don't run it unasked. It
-  earns its time on a story with several scenarios or one that changes
-  existing behaviour, and is a nuisance on "make the button red". Put its
-  questions to the user in plain words, and fold the answers into the
-  story before the builder starts.
-- Brief the fresh session with the story id, and tell it to use this skill.
-- If you brief it by message from your own session, you are its
-  coordinator. The user never sees the builder's messages to you, and
-  may not have looked at this app in months. Everything you pass on must
-  make sense on its own: rewrite it from what the user would see on screen,
-  with an example, never in the builder's words or in code terms
-  ("still to do", "notified flag", "the seeder"). If a point needs no
-  decision from the user, don't pass it on as one. When it messages you
-  about a question, read the question (`aat question show`) and the
-  story, and put it to the user with enough context to answer: what is
-  being built, what they are being asked, and your suggestion. If there is anything to look at, put it first, with its
-  link. When a check-in shows several things, ask about each one; a reply
-  about one of them is not a yes to the rest. Record each reply with
-  `aat question answer`, containing only the user's exact words: no
-  summary, no "(agreeing to ...)", no framing of your own. Future readers
-  treat an answer as the user's decision, so anything you add becomes
-  something they never said. If the reply only makes sense with what you
-  asked, put that in your message to the builder, for its resolve note.
-  Then message the builder to carry on.
-
-### Reviewing a finished story
-
-When the builder says the story is finished (as coordinator, or when the
-user asks you to review):
-
-1. Lead with anything the user has not yet seen working, each with a link.
-   Don't bury it among the findings.
-2. Pass on the builder's own notes in full, briefly, with what you would do
-   about each one. The user can't see the builder's messages to you.
-3. Run the whole suite. Read the diff and each scenario's test, and check
-   the test proves what the scenario says, including anything it says must
-   not happen.
-4. Ask a fresh-eyes agent, with no part in the build, to read the diff
-   against the story description, looking for anything whose meaning
-   changed without a scenario saying so (a column, a status, a badge, a
-   doc), and for docs that no longer match the app.
-5. Raise each finding that needs work as a question on the story
-   (`aat question ask`), in plain words with your suggestion, and record
-   the user's answer. The builder gets them from `aat next` like any
-   question, so the story holds until they are settled.
-6. When the user is happy and nothing is left, accept the story with their
-   words: `aat story accept <story> --note "..."`. Only the user accepts.
-   An accepted story takes no more scenarios or questions; later changes
-   are a new story.
-
-### Changing behaviour that already exists
-
-The spec is the standing record of what the app does, so a later change is
-a new story that changes the record, not an edit. Start with
-`aat feature show <feature>` to see the current rules. Then, in the new
-story:
-
-```bash
-aat scenario replace <old scenario> --story <story> --reason "Customers abroad have no UK postcode." --body @new-rule.feature
-aat scenario retire <old scenario> --story <story> --reason "We no longer post anything to customers."
-```
-
-Nothing is deleted. The old scenario stays in its original story, marked
-`replaced` or `retired`, with the reason. `feature show` and `publish` give
-only the current rules, and each replacement carries what it replaced and
-why, so a future agent finds the current rule, the old one, and the reason.
-
-### Gherkin that aat accepts
+## Gherkin that aat accepts
 
 A block of one or more scenarios, without a `Feature:` line:
 
@@ -416,28 +323,27 @@ Scenario: Exporting an empty report
   keyword, and text before the first scenario. A refused batch stores
   nothing.
 
-## Commands
+## Commands for building
 
 | Command | What it does |
 | --- | --- |
-| `aat story accept <story> --note N` | Record that the user reviewed the finished story and accepted it |
 | `aat story show <story>` | The story, its feature, its steps in order (scenarios with status and test, and planned check-ins), open questions raised mid-build, and the scenarios it retires |
-| `aat next --story S` | A question asked mid-build if there is one, then a retirement to remove, otherwise the first open scenario or planned check-in |
+| `aat next --story S` | A question asked mid-build if there is one, then a retirement to remove, otherwise the first open scenario or planned check-in; marks a scenario it hands out as started |
 | `aat close <scenario> --test-file F --test NAME` | Close a scenario with the test that proves it |
 | `aat close <scenario>` | Close a retired scenario once its behaviour and test are removed |
 | `aat question ask --story S --body B` | Raise a question now; it holds the story |
-| `aat question plan --story S --body B` | Plan a check-in after everything added so far |
 | `aat question answer <question> --body B` | Record one round of the user's answer |
 | `aat question show <question>` | The question with every round and any corrections |
-| `aat question correct <question> (--round N \| --resolve-note) --body B --reason R` | Correct a recorded answer or resolve note, visibly |
 | `aat question resolve <question> --note N [--scenarios G [--replaces SC] [--test-file F --test NAME]]` | Settle it |
-| `aat feature show <feature>` | The feature's current scenarios, in order, and its retired ones |
+| `aat question correct <question> (--round N \| --resolve-note) --body B --reason R` | Correct a recorded answer or resolve note, visibly |
 | `aat scenario show <scenario>` | One scenario, with what it replaced or what replaced it |
-| `aat scenario replace <scenario> --story S --reason R --body G` | Replace a current scenario with one new scenario in a story |
-| `aat scenario retire <scenario> --story S --reason R` | Retire a current scenario as part of a story |
-| `aat feature add`, `feature list`, `story add`, `scenario add` | Agreeing a story, as above |
+| `aat scenario replace <scenario> --story S --reason R --body G` | Replace a closed rule with one new scenario |
+| `aat feature show <feature>` | The feature's current scenarios, in order, and its retired ones |
 | `aat export <story> [--output FILE]` | The story as a markdown review for a person (markdown, not JSON) |
-| `aat publish [--feature F] [--dir D]` | Write each feature as a `.feature` file for Gherkin tools (default `features/` at the project root). Every file is read back with Cucumber's parser first; a file aat didn't write is never overwritten |
+
+The commands for agreeing and tidying a story (`story add`, `scenario add`,
+`scenario edit`, `move`, `delete`, `question plan`, `story accept` and the
+rest) belong to the aat-writing skill.
 
 Text flags (`--description`, `--body`, `--note`, `--scenarios`) take literal
 text, `@path` to read a file, or `-` to read stdin. Stdin is only read when

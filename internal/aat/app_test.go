@@ -116,6 +116,7 @@ type scenarioOut struct {
 	Reason      string `json:"reason"`
 	QuestionID  string `json:"question_id"`
 	RemovedAt   string `json:"removed_at"`
+	HandedOutAt string `json:"handed_out_at"`
 	Replaces    *struct {
 		ID       string `json:"id"`
 		Title    string `json:"title"`

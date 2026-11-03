@@ -167,18 +167,11 @@ func scenarioReplace(ctx context.Context, store *Store, args []string, stdin io.
 	if reason == "" {
 		return nil, validationErr("aat scenario replace: the reason is empty")
 	}
-	text, err := readText(*body, stdin)
+	p, err := oneScenario("scenario replace", *body, stdin, "one scenario is replaced by exactly one new scenario")
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := parseScenarios(text)
-	if err != nil {
-		return nil, err
-	}
-	if len(parsed) != 1 {
-		return nil, validationErr("aat scenario replace: one scenario is replaced by exactly one new scenario, and --body has %d", len(parsed))
-	}
-	return store.ReplaceScenario(ctx, id, *story, parsed[0], reason)
+	return store.ReplaceScenario(ctx, id, *story, p, reason)
 }
 
 func scenarioRetire(ctx context.Context, store *Store, args []string, stdin io.Reader) (any, error) {

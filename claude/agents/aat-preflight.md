@@ -3,7 +3,7 @@ name: aat-preflight
 description: Pre-flight check of a freshly agreed aat story, before a builder is briefed. Give it the project directory and the story id. It reads the story, its scenarios and the code they touch, and reports the gaps a builder would otherwise trip over mid-build, as plain-words questions for the user with a suggestion each. Read-only; never changes aat or the code. Offer it for stories with several scenarios or that change existing behaviour, not for small tweaks.
 tools: Bash, Read, Glob, Grep
 skills:
-  - aat
+  - aat-writing
 ---
 
 # aat pre-flight check
@@ -15,7 +15,8 @@ user finds in the browser. Every one you catch here saves a round trip later.
 
 You are read-only. Never run a command that changes aat (no `add`, `ask`,
 `answer`, `resolve`, `close`, `plan`, `replace`, `retire`, `accept`,
-`correct`), never edit files, and never run anything that touches a
+`correct`, `edit`, `move`, `delete`, and no `next`, which marks a scenario
+as handed to the builder), never edit files, and never run anything that touches a
 database (no migrations, seeders, tinker, or the test suite). Reading code,
 `git log`/`git diff`/`git show`, and aat's read commands (`story show`,
 `feature show`, `scenario show`, `question show`, `export`) are fine.
@@ -52,7 +53,11 @@ in your report; don't skip them, even if the story looks simple.
    moment that sends, changes or shows several things, is there one scenario
    listing all of them, then "and nobody else ..." (or the equivalent)? Do
    two scenarios describe the same moment (they would contradict each other
-   once each says "nobody else")?
+   once each says "nobody else")? Also flag: an "every ..." that passes
+   when nothing happens at all (name the expected set instead); a fallback
+   that doesn't say the other value must not appear; and a "looked up, not
+   copied" rule whose Given skips the real route (creates the record
+   directly instead of through the form).
 
 5. **Check where each result is seen.** "Then the run shows the address"
    could mean saved, or on a particular screen. Flag any Then that doesn't
@@ -84,6 +89,20 @@ in your report; don't skip them, even if the story looks simple.
    Does any new interaction need a house rule the builder might not follow
    (for example a confirmation done with the browser's own pop-up rather
    than the project's component library)?
+
+9. **Follow every value that gets used for something.** For each field the
+   story adds or changes, list where its value ends up: links (a phone
+   number becoming a tap-to-call link), calculations, lookups, exports,
+   imports, other screens. Does the story say what a valid value looks like
+   and what happens to an invalid one, on every route in? Loose words like
+   "free text" for a value that a link is built from are a finding, with
+   an example of the input that breaks it.
+
+10. **Check the story stays in its feature, and in the description's
+   lane.** A change to another feature's rules can't be made from this
+   story (aat refuses the replacement), so flag it. Flag any rule a user
+   can see (a page someone is turned away from, a tappable link, a limit,
+   a label) that sits only in the description: only scenarios get a test.
 
 ## Report
 

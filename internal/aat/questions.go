@@ -42,18 +42,26 @@ type Correction struct {
 
 // AskQuestion raises a question mid-build. It holds the story at once.
 func (s *Store) AskQuestion(ctx context.Context, storyID, text string) (Question, error) {
-	return s.addQuestion(ctx, storyID, text, false)
+	return s.addQuestion(ctx, storyID, text, false, "")
 }
 
 // PlanQuestion places a check-in after everything already in the story's
-// order. It holds the story only once next reaches it.
-func (s *Store) PlanQuestion(ctx context.Context, storyID, text string) (Question, error) {
-	return s.addQuestion(ctx, storyID, text, true)
+// order, or in front of the draft step before when it is set. It holds the
+// story only once next reaches it.
+func (s *Store) PlanQuestion(ctx context.Context, storyID, text, before string) (Question, error) {
+	return s.addQuestion(ctx, storyID, text, true, before)
 }
 
-func (s *Store) addQuestion(ctx context.Context, storyID, text string, planned bool) (Question, error) {
+func (s *Store) addQuestion(ctx context.Context, storyID, text string, planned bool, before string) (Question, error) {
 	if err := s.requireOpenStory(ctx, storyID); err != nil {
 		return Question{}, err
+	}
+	at := 0
+	if before != "" {
+		var err error
+		if at, err = s.placeBefore(ctx, storyID, before); err != nil {
+			return Question{}, err
+		}
 	}
 	id, err := newID(questionIDLen)
 	if err != nil {
@@ -63,8 +71,13 @@ func (s *Store) addQuestion(ctx context.Context, storyID, text string, planned b
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		var pos any // NULL unless planned
 		if planned {
-			p, err := nextPosition(ctx, tx, storyID)
-			if err != nil {
+			p := at
+			if at == 0 {
+				var err error
+				if p, err = nextPosition(ctx, tx, storyID); err != nil {
+					return err
+				}
+			} else if err := makeRoom(ctx, tx, storyID, at, 1); err != nil {
 				return err
 			}
 			q.Position, pos = p, p
@@ -351,13 +364,17 @@ func (s *Store) loadQuestions(ctx context.Context, clause string, args ...any) (
 	return qs, rows.Err()
 }
 
-// questionAdd handles question ask and question plan, which take the same
-// flags and differ only in when the question holds the story.
-func questionAdd(ctx context.Context, name string, args []string, stdin io.Reader,
-	add func(ctx context.Context, storyID, text string) (Question, error)) (any, error) {
+// questionAdd handles question ask and question plan, which differ in when
+// the question holds the story. Only a planned check-in has a place in the
+// story's order, so only plan takes --before.
+func questionAdd(ctx context.Context, store *Store, name string, args []string, stdin io.Reader, planned bool) (any, error) {
 	fs := newFlags(name)
 	story := fs.String("story", "", "story id")
 	body := fs.String("body", "", "the question")
+	before := new(string)
+	if planned {
+		before = fs.String("before", "", "the step to put the check-in in front of")
+	}
 	if err := parseFlags(fs, args); err != nil {
 		return nil, err
 	}
@@ -371,7 +388,10 @@ func questionAdd(ctx context.Context, name string, args []string, stdin io.Reade
 	if text == "" {
 		return nil, validationErr("aat %s: the question is empty", name)
 	}
-	return add(ctx, *story, text)
+	if planned {
+		return store.PlanQuestion(ctx, *story, text, *before)
+	}
+	return store.AskQuestion(ctx, *story, text)
 }
 
 func questionAnswer(ctx context.Context, store *Store, args []string, stdin io.Reader) (any, error) {
