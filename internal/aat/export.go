@@ -65,6 +65,11 @@ func renderStory(st Story, qs []Question) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%sfeature: %s\ncreated_at: %s\n---\n\n", frontMatter(st), st.Feature.ID, st.CreatedAt)
 	fmt.Fprintf(&b, "## %s\n\nFeature: %s\n\n", st.Title, st.Feature.Title)
+	if st.AgreedAt == "" {
+		b.WriteString("Not signed off yet: a draft.\n\n")
+	} else {
+		fmt.Fprintf(&b, "Signed off on %s. %s\n\n", st.AgreedAt, st.AgreeNote)
+	}
 	if st.AcceptedAt == "" {
 		b.WriteString("Not accepted yet.\n\n")
 	} else {

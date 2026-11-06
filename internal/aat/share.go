@@ -26,7 +26,8 @@ import (
 
 // shareFormat is the version of the YAML layout. Import refuses a file from a
 // newer one, as OpenStore refuses a newer schema.
-const shareFormat = 1
+// Format 2 added a story's sign-off (agreed_at, agree_note).
+const shareFormat = 2
 
 // shareCheck says how each YAML file was checked before it was written.
 const shareCheck = "read back with aat import's own reader"
@@ -49,6 +50,8 @@ type sharedStory struct {
 	Title       string           `yaml:"title"`
 	Description string           `yaml:"description,omitempty"`
 	CreatedAt   string           `yaml:"created_at"`
+	AgreedAt    string           `yaml:"agreed_at,omitempty"`
+	AgreeNote   string           `yaml:"agree_note,omitempty"`
 	AcceptedAt  string           `yaml:"accepted_at,omitempty"`
 	AcceptNote  string           `yaml:"accept_note,omitempty"`
 	Scenarios   []sharedScenario `yaml:"scenarios"`
@@ -167,14 +170,14 @@ func (s *Store) sharedFeature(ctx context.Context, featureID string) (sharedFile
 	}
 	out := sharedFile{Format: shareFormat, Feature: sharedFeature(feature), Stories: []sharedStory{}}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, title, description, created_at, COALESCE(accepted_at, ''), accept_note
+		SELECT id, title, description, created_at, COALESCE(agreed_at, ''), agree_note, COALESCE(accepted_at, ''), accept_note
 		FROM stories WHERE feature_id = ? ORDER BY created_at, rowid`, featureID)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		var st sharedStory
-		if err := rows.Scan(&st.ID, &st.Title, &st.Description, &st.CreatedAt, &st.AcceptedAt, &st.AcceptNote); err != nil {
+		if err := rows.Scan(&st.ID, &st.Title, &st.Description, &st.CreatedAt, &st.AgreedAt, &st.AgreeNote, &st.AcceptedAt, &st.AcceptNote); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -319,6 +322,11 @@ func importFiles(ctx context.Context, store *Store, args []string, dir string) (
 		return nil, conflictErr("these records differ between the file and this database in a way import can't settle, so nothing was imported:\n- %s",
 			strings.Join(m.clashes, "\n- "))
 	}
+	// A format 1 file comes from an aat without sign-off, so a story already
+	// under way in it arrives unsigned. Treat it as the migration does.
+	if err := backfillAgreed(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, validationErr("the file refers to records it doesn't hold, so nothing was imported: %v", err)
 	}
@@ -429,14 +437,14 @@ func (m *merger) feature(f sharedFile) error {
 }
 
 func (m *merger) story(featureID string, in sharedStory) error {
-	var feature, title, description, createdAt, acceptedAt, acceptNote string
-	err := m.tx.QueryRowContext(m.ctx, `SELECT feature_id, title, description, created_at, COALESCE(accepted_at, ''), accept_note
-		FROM stories WHERE id = ?`, in.ID).Scan(&feature, &title, &description, &createdAt, &acceptedAt, &acceptNote)
+	var feature, title, description, createdAt, agreedAt, agreeNote, acceptedAt, acceptNote string
+	err := m.tx.QueryRowContext(m.ctx, `SELECT feature_id, title, description, created_at, COALESCE(agreed_at, ''), agree_note, COALESCE(accepted_at, ''), accept_note
+		FROM stories WHERE id = ?`, in.ID).Scan(&feature, &title, &description, &createdAt, &agreedAt, &agreeNote, &acceptedAt, &acceptNote)
 	who := fmt.Sprintf("story %s (%q)", in.ID, in.Title)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if err := m.exec("INSERT INTO stories (id, feature_id, title, description, created_at, accepted_at, accept_note) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			in.ID, featureID, in.Title, in.Description, in.CreatedAt, null(in.AcceptedAt), in.AcceptNote); err != nil {
+		if err := m.exec("INSERT INTO stories (id, feature_id, title, description, created_at, agreed_at, agree_note, accepted_at, accept_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			in.ID, featureID, in.Title, in.Description, in.CreatedAt, null(in.AgreedAt), in.AgreeNote, null(in.AcceptedAt), in.AcceptNote); err != nil {
 			return err
 		}
 		m.added++
@@ -448,6 +456,12 @@ func (m *merger) story(featureID string, in sharedStory) error {
 	default:
 		if title != in.Title || description != in.Description || createdAt != in.CreatedAt {
 			m.clash("%s: its title or description was edited on one side", who)
+		}
+		if m.forward(who+": signed off", []string{agreedAt, agreeNote}, []string{in.AgreedAt, in.AgreeNote}) {
+			if err := m.exec("UPDATE stories SET agreed_at = ?, agree_note = ? WHERE id = ?", in.AgreedAt, in.AgreeNote, in.ID); err != nil {
+				return err
+			}
+			m.updated++
 		}
 		if m.forward(who+": accepted", []string{acceptedAt, acceptNote}, []string{in.AcceptedAt, in.AcceptNote}) {
 			if err := m.exec("UPDATE stories SET accepted_at = ?, accept_note = ? WHERE id = ?", in.AcceptedAt, in.AcceptNote, in.ID); err != nil {

@@ -34,18 +34,46 @@ the user sees the result.
 
 ## How a story gets agreed
 
-1. **Get the gist.** A short chat about what the user wants and why. Unless
-   they ask for a long back-and-forth, take the gist and go: don't
-   interview them.
-2. **Draft the whole story fast.** Read the code (below), then write the
+1. **Get the gist.** A short chat about what the user wants and why. Don't
+   interview them. The gist may come from the chat, an issue or a file the
+   user points you to; an issue may be months old, and the user may only
+   faintly remember it.
+2. **Check the gist with the user, then stop.** Before drafting anything,
+   even when an issue seems to hold the whole idea, give the user a few
+   plain lines: what you think the change is, where that came from (the
+   chat, issue X, file Y), and what you plan to leave out. Then ask
+   whether you can draft it and have the critic go at it, and wait for the
+   answer. Anything other than a yes becomes a chat. This is the cheapest
+   place to catch a missed change that would reshape the whole story, and
+   the "left out" line is where scope drift shows: something already filed
+   as its own issue doesn't belong in this story.
+3. **Draft the whole story fast.** Read the code (below), then write the
    story, its description, every scenario and any check-ins into aat in
-   one go. Make the ordinary calls yourself and write them in.
-3. **Have it attacked.** Run the `aat-critic` agent on it (below), argue
-   with its findings, fix the story, and run it once more.
-4. **Show the user one short list.** What the story now does, in a few
-   lines; then only the decisions that are genuinely theirs, each with your
-   position and one real example; then, in a line or two, what the critic
-   caught that you fixed. Apply their answers, then brief the builder.
+   one go. Make the ordinary calls yourself and write them in. The story
+   is a draft until the user signs it off; `aat next` refuses it, so no
+   builder can start on it.
+4. **Have it attacked.** Run the `aat-critic` agent on it (below), argue
+   with its findings, fix the story, and run it once more. Don't send the
+   user progress updates while you do; they only make sense to someone who
+   followed along.
+5. **Show the user the story, then their decisions.** The user has not seen
+   the draft, so the decisions mean nothing on their own. In one message:
+   - the story as plain sentences about what changes for people using the
+     app, grouped, one line per behaviour ("When you type a customer's
+     number on the new run form, it's saved as +447700900123."). Not
+     Gherkin, not "13 scenarios";
+   - only the decisions that are genuinely theirs, each starting from what
+     the app does today ("Today, a bad email leaves that row out of the
+     import."), with your position and one real example;
+   - in a line or two, what the critic caught that you fixed;
+   - an offer to show the full story and its scenarios before going on.
+   If they want it, paste the scenarios into the chat word for word, not a
+   fuller summary and not "run `aat story show`": the user may be on a
+   phone, and a paraphrase is where gaps get smoothed over. The scenarios
+   are what the builder's tests will be written against.
+6. **Sign it off.** Apply their answers. When the user says yes to the
+   story, record it in their words: `aat story agree <story> --note
+   "<their words>"`. Only then brief the builder.
 
 **What is the user's call:** something people using the app will see or
 do differently, with no obvious right answer; anything costly to undo;
@@ -72,6 +100,10 @@ still object.
   asserted from memory.
 
 ## Agreeing a story
+
+To pick up earlier work ("that aat idea from yesterday"), start with
+`aat stories --open`: every story not yet accepted, most recently touched
+first, each marked draft, building or built.
 
 ```bash
 aat init                                              # once per project; gitignores .aat/
@@ -225,7 +257,9 @@ count: treat them as findings, not interruptions.
 
 ### Tidying a story before it is built
 
-Until a step is built, it is a draft:
+Until a step is built, it is a draft step, whether or not the story has
+been signed off (a signed-off story is no longer a draft story, but its
+unbuilt steps can still be tidied):
 
 - `aat scenario edit` rewrites a scenario in place.
 - `aat scenario add --before <step>` and `aat question plan --before <step>`
@@ -268,7 +302,7 @@ coordinator, and the user talks to you.
 
 - **Only the builder runs `aat next`.** It marks the scenario it hands out
   as started, which stops it being edited. To see where a story is, use
-  `aat story show`.
+  `aat story show`, or `aat stories` for every story at once.
 - **Relay in the user's terms.** The user never sees the builder's
   messages, and may not have looked at the app in months. Rewrite each
   point from what the user would see, with an example, never in the
@@ -372,8 +406,10 @@ nothing.
 | Command | What it does |
 | --- | --- |
 | `aat feature add --title T [--description D]` | Add a feature |
-| `aat feature list` / `feature show <feature>` | List features; a feature's current scenarios and its retired ones |
-| `aat story add --feature F --title T [--description D]` | Add a story to a feature |
+| `aat feature list` / `feature show <feature>` | List features, with story counts by state; a feature's current scenarios and its retired ones |
+| `aat stories [--state STATE \| --open]` | Every story, most recently touched first, with its state (draft, building, built, accepted), progress, and any question holding it |
+| `aat story add --feature F --title T [--description D]` | Add a story to a feature; it starts as a draft |
+| `aat story agree <story> --note N` | Record the user's sign-off in their words; only then will `next` hand out its work |
 | `aat story show <story>` | The story, its steps in order, open questions and retirements |
 | `aat story edit <story> [--title T] [--description D]` | Change a story's title or description until it is accepted |
 | `aat story accept <story> --note N` | Record that the user reviewed the finished story and accepted it |

@@ -36,6 +36,9 @@ type Story struct {
 	Steps       []Step     `json:"steps"`                 // scenarios and planned check-ins, in the story's order
 	Questions   []Question `json:"questions"`             // open questions asked mid-build, without rounds
 	Retires     []Scenario `json:"retires,omitempty"`     // scenarios this story retired, whose behaviour and tests it removes
+	State       string     `json:"state"`               // draft, building, built or accepted
+	AgreedAt    string     `json:"agreed_at,omitempty"` // when the user signed the story off for building; until then it is a draft
+	AgreeNote   string     `json:"agree_note,omitempty"`
 	AcceptedAt  string     `json:"accepted_at,omitempty"` // when the user reviewed and accepted the finished story
 	AcceptNote  string     `json:"accept_note,omitempty"`
 }
@@ -208,6 +211,14 @@ var migrations = []migration{
 			);`)
 		return err
 	}},
+	{11, "a story is a draft until the user signs it off", func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			ALTER TABLE stories ADD COLUMN agreed_at TEXT;
+			ALTER TABLE stories ADD COLUMN agree_note TEXT NOT NULL DEFAULT '';`); err != nil {
+			return err
+		}
+		return backfillAgreed(ctx, tx)
+	}},
 }
 
 func OpenStore(ctx context.Context, path string) (*Store, error) {
@@ -364,9 +375,10 @@ func (s *Store) AddStory(ctx context.Context, featureID, title, description stri
 func (s *Store) GetStory(ctx context.Context, id string) (Story, error) {
 	st := Story{ID: id}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT st.title, st.description, st.created_at, f.id, f.title, COALESCE(st.accepted_at, ''), st.accept_note
+		SELECT st.title, st.description, st.created_at, f.id, f.title, COALESCE(st.agreed_at, ''), st.agree_note, COALESCE(st.accepted_at, ''), st.accept_note
 		FROM stories st JOIN features f ON f.id = st.feature_id
-		WHERE st.id = ?`, id).Scan(&st.Title, &st.Description, &st.CreatedAt, &st.Feature.ID, &st.Feature.Title, &st.AcceptedAt, &st.AcceptNote)
+		WHERE st.id = ?`, id).Scan(&st.Title, &st.Description, &st.CreatedAt, &st.Feature.ID, &st.Feature.Title,
+		&st.AgreedAt, &st.AgreeNote, &st.AcceptedAt, &st.AcceptNote)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, notFoundErr("no story %q", id)
 	}
@@ -392,7 +404,10 @@ func (s *Store) GetStory(ctx context.Context, id string) (Story, error) {
 	if st.Retires, err = s.loadScenarios(ctx, "WHERE retired_by = ? ORDER BY changed_at, rowid", id); err != nil {
 		return st, err
 	}
-	st.Questions, err = s.loadQuestions(ctx, "WHERE story_id = ? AND resolved_at IS NULL AND position IS NULL ORDER BY created_at, rowid", id)
+	if st.Questions, err = s.loadQuestions(ctx, "WHERE story_id = ? AND resolved_at IS NULL AND position IS NULL ORDER BY created_at, rowid", id); err != nil {
+		return st, err
+	}
+	st.State, _, err = s.storyState(ctx, st)
 	return st, err
 }
 
@@ -426,6 +441,9 @@ func (s *Store) requireOpenStory(ctx context.Context, id string) error {
 // it. A story is finished when next has nothing left to hand out.
 func (s *Store) AcceptStory(ctx context.Context, id, note string) (Story, error) {
 	if err := s.requireOpenStory(ctx, id); err != nil {
+		return Story{}, err
+	}
+	if err := s.requireAgreed(ctx, id); err != nil {
 		return Story{}, err
 	}
 	sc, q, err := s.Next(ctx, id)

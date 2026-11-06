@@ -25,8 +25,12 @@ const usage = `usage: aat [--db path] <command> [flags]
 
   init                                          set up aat in this project
   feature add --title T [--description D]       add a feature (a long-lived capability)
-  feature list                                  list features
+  feature list                                  list features, with how many stories each has in each
+                                                state
   feature show <feature>                        a feature's current scenarios, and its retired ones
+  stories [--state STATE | --open]              every story, newest-touched first, each in one state:
+                                                draft, building, built or accepted; --open leaves out
+                                                accepted ones
   story add --feature F --title T [--description D]
                                                 add a story (a piece of work) to a feature
   story show <story>                            a story's scenarios and planned check-ins in order,
@@ -34,6 +38,9 @@ const usage = `usage: aat [--db path] <command> [flags]
   story edit <story> [--title T] [--description D]
                                                 change a story's title or description until it is
                                                 accepted
+  story agree <story> --note N                  record that the user signed the story off for
+                                                building; until then it is a draft, and next
+                                                refuses it
   story accept <story> --note N                 record that the user reviewed the finished story
                                                 and accepted it; it then takes no more work
   scenario add --story S --body B [--before STEP]
@@ -151,8 +158,9 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 	case "feature add":
 		return featureAdd(ctx, store, rest, stdin)
 	case "feature list":
-		features, err := store.ListFeatures(ctx)
-		return map[string]any{"features": features}, err
+		return featureList(ctx, store)
+	case "stories":
+		return listStories(ctx, store, rest)
 	case "feature show":
 		return featureShow(ctx, store, rest)
 	case "story add":
@@ -162,6 +170,8 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 			return nil, usageErr("usage: aat story show <story>")
 		}
 		return store.GetStory(ctx, rest[0])
+	case "story agree":
+		return storyAgree(ctx, store, rest, stdin)
 	case "story accept":
 		return storyAccept(ctx, store, rest, stdin)
 	case "story edit":
@@ -417,6 +427,9 @@ func next(ctx context.Context, store *Store, args []string) (any, error) {
 	}
 	if *story == "" {
 		return nil, usageErr("aat next: --story is required")
+	}
+	if err := store.requireAgreed(ctx, *story); err != nil {
+		return nil, err
 	}
 	sc, q, err := store.Next(ctx, *story)
 	if err != nil {

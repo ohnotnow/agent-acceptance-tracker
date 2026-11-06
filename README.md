@@ -45,7 +45,9 @@ Given/When/Then example of behaviour.
 
 1. You and an agent agree a story, writing the piece of work down as
    scenarios. You can plan check-ins between them: points where the agent
-   must stop and show you something before carrying on.
+   must stop and show you something before carrying on. Until you say yes,
+   the story is a draft, and `aat next` won't hand out its work. Your yes
+   is recorded with `aat story agree`.
 2. A fresh agent session builds it. It runs `aat next` to get the next
    scenario, writes a failing test, makes it pass, and closes the scenario
    with `aat close`.
@@ -61,6 +63,11 @@ Given/When/Then example of behaviour.
    the record, marked, with the reason. Removing a retired behaviour is
    work like any other: `aat next` hands it out, and `aat close` without a
    test closes it once the old test name is gone from its file.
+
+`aat stories` lists every story with the state it's in: draft, building,
+built (waiting for you to accept it) or accepted. The most recently touched
+comes first. `aat stories --open` leaves out accepted ones, which is the
+quickest way to find what was under way.
 
 `aat close` only checks that the test file is inside the project and
 contains the test name. It doesn't run your tests; that's the reviewer's
@@ -95,7 +102,7 @@ each scenario, every question and answer, and what replaced what), run
 They run `aat import features/yaml/<feature>.yaml` to merge it into their own
 database. Import adds what they haven't got, and takes any change that only
 moves forward, such as a scenario closed with its test, an answer added, a
-question settled, a story accepted or a draft scenario deleted. Anything else that differs on the two
+question settled, a story signed off or accepted, or a draft scenario deleted. Anything else that differs on the two
 sides, such as a draft scenario reworded on one side, is a clash. Import then
 writes nothing and lists the records involved. Someone reviewing an agreed
 story should raise their points as questions rather than edit it, so their
@@ -110,11 +117,19 @@ your code with Cucumber, Behave or pytest-bdd as you normally would.
 
 ## Getting started
 
-Clone the repository, then build and install the `aat` binary:
+Clone the repository, then build and install the `aat` binary, the Claude
+Code skills and the critic agent:
 
 ```bash
-go install ./cmd/aat
+make install
 ```
+
+If `aat` is already on your PATH, the new binary replaces it there.
+Otherwise it goes where `go install` would put it (`go env GOBIN`, or
+`$(go env GOPATH)/bin`). Set `BINDIR` to put it somewhere else, for example
+`make install BINDIR=~/bin`. The skills and agent go into `~/.claude`
+(`CLAUDE_DIR` to change it), replacing any earlier copies.
+`make install-bin` and `make install-claude` do one half each.
 
 Then, in the project you want to use it in:
 
@@ -125,20 +140,18 @@ aat init
 `aat init` creates `.aat/aat.db` at the root of the git repository and adds
 `.aat/` to `.gitignore`.
 
-Copy `claude/skills/aat/` and `claude/skills/aat-writing/` into
-`~/.claude/skills/`, and `claude/agents/aat-critic.md` into
-`~/.claude/agents/`.
-
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `aat init` | Set up aat in this project |
 | `aat feature add --title T [--description D]` | Add a feature |
-| `aat feature list` | List features |
+| `aat feature list` | List features, with how many stories each has in each state |
+| `aat stories [--state STATE \| --open]` | Every story, most recently touched first, with its state (draft, building, built or accepted) and progress |
 | `aat feature show <feature>` | A feature's current scenarios, and its retired ones |
 | `aat story add --feature F --title T [--description D]` | Add a story to a feature |
 | `aat story edit <story> [--title T] [--description D]` | Change a story's title or description until it is accepted |
+| `aat story agree <story> --note N` | Record that you signed a draft story off for building |
 | `aat story accept <story> --note N` | Record that you reviewed a finished story and accepted it |
 | `aat story show <story>` | A story's scenarios and planned check-ins in order, its open questions and its retirements |
 | `aat scenario add --story S --body B [--before STEP]` | Add Gherkin scenarios to a story, at the end or in front of a step not yet built |
@@ -148,7 +161,7 @@ Copy `claude/skills/aat/` and `claude/skills/aat-writing/` into
 | `aat scenario show <scenario>` | One scenario, with what it replaced or what replaced it |
 | `aat scenario replace <scenario> --story S --reason R --body B` | Replace a scenario with a new one, as part of a story |
 | `aat scenario retire <scenario> --story S --reason R` | Retire a scenario, as part of a story |
-| `aat next --story S` | What to build or ask next |
+| `aat next --story S` | What to build or ask next; refuses a draft story |
 | `aat close <scenario> --test-file F --test NAME` | Close a scenario with the test that proves it |
 | `aat close <scenario>` | Close a retired scenario once its behaviour and test are removed |
 | `aat question ask --story S --body B` | Raise a question; it holds the story until resolved |

@@ -53,7 +53,10 @@ Then loop:
 
 1. Run `aat next --story <story>`. Only the builder runs `next`: it marks
    the scenario it hands you as started, which stops anyone editing it
-   under you.
+   under you. If it refuses because the story is still a draft, the user
+   hasn't signed it off: stop and say so (to the coordinating session, if
+   there is one). Never run `aat story agree` yourself; only the session
+   the user agreed the story with records their yes.
 2. If it returns `{"scenario": ...}`, build that scenario test first:
    - Write one test for it, run it, and see it fail.
    - If it passes straight away (the behaviour came free with earlier work),
@@ -346,7 +349,8 @@ Scenario: Exporting an empty report
 | Command | What it does |
 | --- | --- |
 | `aat story show <story>` | The story, its feature, its steps in order (scenarios with status and test, and planned check-ins), open questions raised mid-build, and the scenarios it retires |
-| `aat next --story S` | A question asked mid-build if there is one, then a retirement to remove, otherwise the first open scenario or planned check-in; marks a scenario it hands out as started |
+| `aat next --story S` | A question asked mid-build if there is one, then a retirement to remove, otherwise the first open scenario or planned check-in; marks a scenario it hands out as started; refuses a draft story |
+| `aat stories [--state STATE \| --open]` | Every story with its state (draft, building, built, accepted) and progress |
 | `aat close <scenario> --test-file F --test NAME` | Close a scenario with the test that proves it |
 | `aat close <scenario>` | Close a retired scenario once its behaviour and test are removed |
 | `aat question ask --story S --body B` | Raise a question now; it holds the story |

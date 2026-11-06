@@ -141,7 +141,16 @@ func addFeature(t *testing.T, dir, title string) featureOut {
 	return f
 }
 
+// addStory adds a story and signs it off, so next will hand out its work.
+// Use addDraftStory for one the user hasn't agreed yet.
 func addStory(t *testing.T, dir, featureID, title string) storyOut {
+	t.Helper()
+	s := addDraftStory(t, dir, featureID, title)
+	agree(t, dir, s.ID)
+	return s
+}
+
+func addDraftStory(t *testing.T, dir, featureID, title string) storyOut {
 	t.Helper()
 	var s storyOut
 	mustRun(t, dir, "", &s, "story", "add", "--feature", featureID, "--title", title, "--description", "why "+title)
