@@ -100,6 +100,9 @@ func Run(ctx context.Context, args []string, dir string, streams Streams) int {
 		if !errors.As(err, &ce) {
 			ce = &CLIError{"internal", err.Error(), 1}
 		}
+		if ce.Code == "usage" {
+			ce.Message += " (aat --help lists every command)"
+		}
 		writeJSON(streams.Stderr, map[string]any{"error": map[string]string{"code": ce.Code, "message": ce.Message}})
 		return ce.ExitCode
 	}
@@ -121,12 +124,17 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 	global := flag.NewFlagSet("aat", flag.ContinueOnError)
 	global.SetOutput(io.Discard)
 	dbFlag := global.String("db", "", "database path")
-	if err := global.Parse(args); err != nil {
-		return nil, usageErr("%v\n%s", err, usage)
+	if err := global.Parse(args); errors.Is(err, flag.ErrHelp) {
+		return help(nil)
+	} else if err != nil {
+		return nil, usageErr("%v", err)
 	}
 	args = global.Args()
-	if len(args) == 0 {
-		return nil, usageErr("%s", usage)
+	if words, ok := helpWanted(args); ok {
+		return help(words)
+	}
+	if len(usageEntries(args[:1])) == 0 {
+		return nil, usageErr("unknown command %q", args[0])
 	}
 
 	dbPath := *dbFlag
@@ -227,7 +235,72 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 	case "import":
 		return importFiles(ctx, store, rest, dir)
 	}
-	return nil, usageErr("unknown command %q\n%s", strings.Join(args, " "), usage)
+	return nil, usageErr("unknown command %q", strings.Join(args, " "))
+}
+
+// helpWanted reports whether args ask for help, and about which command:
+// no command at all, "help [command...]", or -h/--help anywhere after the
+// command's words.
+func helpWanted(args []string) ([]string, bool) {
+	if len(args) == 0 {
+		return nil, true
+	}
+	if args[0] == "help" {
+		return args[1:], true
+	}
+	for _, a := range args {
+		if a == "-h" || a == "--help" || a == "-help" {
+			return commandWords(args), true
+		}
+	}
+	return nil, false
+}
+
+// commandWords is the command's words: the args before the first flag.
+func commandWords(args []string) []string {
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") {
+			return args[:i]
+		}
+	}
+	return args
+}
+
+// help is the usage text for a person at a terminal: all of it, or only the
+// entries for the command named by words ("story" gives every story
+// command, "story agree" just that one).
+// Words after the command's own ("story show XZaWlH --help") are dropped
+// until something matches.
+func help(words []string) (any, error) {
+	if len(words) == 0 {
+		return rawText(usage + "\n"), nil
+	}
+	for n := len(words); n > 0; n-- {
+		if picked := usageEntries(words[:n]); len(picked) > 0 {
+			lines := strings.Split(usage, "\n")
+			return rawText(lines[0] + "\n\n" + strings.Join(picked, "\n") + "\n\n" + lines[len(lines)-1] + "\n"), nil
+		}
+	}
+	return nil, usageErr("unknown command %q", strings.Join(words, " "))
+}
+
+// usageEntries is the lines of every usage entry whose command starts with words.
+func usageEntries(words []string) []string {
+	var picked []string
+	keep := false
+	for _, l := range strings.Split(usage, "\n") {
+		switch {
+		case strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "   "): // an entry's first line
+			fields := strings.Fields(l)
+			keep = len(fields) >= len(words) && strings.Join(fields[:len(words)], " ") == strings.Join(words, " ")
+		case !strings.HasPrefix(l, "   "): // a line that isn't part of an entry
+			keep = false
+		}
+		if keep {
+			picked = append(picked, l)
+		}
+	}
+	return picked
 }
 
 // projectRoot is the nearest directory at or above dir holding .git, or dir itself.
