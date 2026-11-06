@@ -14,8 +14,6 @@ import (
 	"unicode/utf8"
 )
 
-var Version = "dev" // overwritten by -ldflags at release
-
 type Streams struct {
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
@@ -88,13 +86,30 @@ const usage = `usage: aat [--db path] <command> [flags]
                                                 database; stops, writing nothing, on a clash
   export <story> [--output FILE]                the story as a markdown review (not JSON): each
                                                 scenario with its test, each question with its answers
-  version                                       print the version
+  version                                       print the version, whether the installed skills match
+                                                this aat's, and whether a newer release is out
+  install-skills [--force] [--dry-run] [--dir D]
+                                                put this aat's Claude Code skills and agent in
+                                                ~/.claude (or D), asking before replacing a copy
+                                                that differs
+  self-update [--check] [--yes]                 replace this aat with the latest release, then say
+                                                whether the skills changed too
 
 Text flags (D, B, N, G) take literal text, @path to read a file, or - to read stdin.`
 
 // Run executes one aat command from dir and returns the process exit code.
 func Run(ctx context.Context, args []string, dir string, streams Streams) int {
 	out, err := dispatch(ctx, args, dir, streams.Stdin)
+	if cmd, ok := out.(streamed); ok && err == nil {
+		err = cmd(streams)
+		var code exitCode
+		if errors.As(err, &code) {
+			return int(code)
+		}
+		if err == nil {
+			return 0
+		}
+	}
 	if err != nil {
 		var ce *CLIError
 		if !errors.As(err, &ce) {
@@ -142,9 +157,14 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 		dbPath = filepath.Join(projectRoot(dir), ".aat", "aat.db")
 	}
 
+	rest := args[1:]
 	switch args[0] {
 	case "version":
-		return map[string]string{"version": Version}, nil
+		return streamed(func(s Streams) error { return runVersion(s.Stdout, defaultClaudeDir(), latestReleaseURL(RepoURL)) }), nil
+	case "self-update":
+		return streamed(func(s Streams) error { return runSelfUpdateCmd(rest, s) }), nil
+	case "install-skills":
+		return streamed(func(s Streams) error { return runInstallSkills(rest, s) }), nil
 	case "init":
 		return runInit(ctx, dir, dbPath, *dbFlag != "")
 	}

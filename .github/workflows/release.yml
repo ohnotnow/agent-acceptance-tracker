@@ -1,0 +1,79 @@
+name: Release
+
+# Push a tag like v0.1.0 to build aat for each platform and publish the
+# binaries, with SHA256SUMS, on the GitHub release page. aat self-update
+# reads them; keep the matrix in step with assetName in
+# internal/aat/selfupdate.go.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: go test ./...
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          ext=""
+          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
+          pkg=github.com/ohnotnow/agent-acceptance-tracker/internal/aat
+          go build -ldflags "-X ${pkg}.Version=${GITHUB_REF_NAME} -X ${pkg}.RepoURL=https://github.com/${{ github.repository }}" \
+            -o "aat-${GOOS}-${GOARCH}${ext}" ./cmd/aat
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aat-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: aat-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Checksums
+        run: sha256sum aat-* > SHA256SUMS
+
+      # GitHub's own gh CLI (on every runner) rather than a third-party
+      # action: this step can write releases, and self-update trusts what it
+      # publishes.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" aat-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --generate-notes

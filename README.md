@@ -117,8 +117,12 @@ your code with Cucumber, Behave or pytest-bdd as you normally would.
 
 ## Getting started
 
-Clone the repository, then build and install the `aat` binary, the Claude
-Code skills and the critic agent:
+Download the binary for your platform from the
+[releases page](https://github.com/ohnotnow/agent-acceptance-tracker/releases/latest),
+put it on your PATH as `aat`, and run `aat install-skills` to put the Claude
+Code skills and the critic agent in `~/.claude`.
+
+Or clone the repository and build it:
 
 ```bash
 make install
@@ -127,9 +131,33 @@ make install
 If `aat` is already on your PATH, the new binary replaces it there.
 Otherwise it goes where `go install` would put it (`go env GOBIN`, or
 `$(go env GOPATH)/bin`). Set `BINDIR` to put it somewhere else, for example
-`make install BINDIR=~/bin`. The skills and agent go into `~/.claude`
-(`CLAUDE_DIR` to change it), replacing any earlier copies.
-`make install-bin` and `make install-claude` do one half each.
+`make install BINDIR=~/bin`. `make install` then runs the new binary's
+`install-skills` (`CLAUDE_DIR` to install somewhere other than `~/.claude`).
+`make install-bin` installs only the binary.
+
+### Keeping it up to date
+
+The skills and agent are built into the binary, so each release carries
+the copies that go with it. `aat version` says whether the ones in
+`~/.claude` match. `aat install-skills` puts them in place: a missing file
+is added, and before replacing one that differs it asks `[y/N/d]`, where
+`d` shows the diff. With no terminal to ask at (an agent running it), it
+leaves changed files alone and lists them; `--force` replaces them,
+`--dry-run` only reports.
+
+`aat self-update` replaces a binary downloaded from the releases page with
+the latest release, after checking the download against the release's
+`SHA256SUMS`, and then says whether the skills changed too.
+`aat self-update --check` only reports (exit 0 up to date, 1 newer
+available, 2 couldn't check).
+
+If you built aat from source, by hand, with `make install` or with
+`go install`, `self-update` does nothing: it says so and leaves your copy
+alone, because it can't tell what you built. Update a source build the way
+you made it: `git pull && make install`, or `go install` again.
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is
+pushed.
 
 Then, in the project you want to use it in:
 
@@ -176,7 +204,9 @@ aat init
 | `aat publish --yaml [--feature F] [--dir D]` | Write everything about each feature as YAML, for `aat import` |
 | `aat import <file>...` | Merge YAML files from `publish --yaml`; on a clash, writes nothing |
 | `aat export <story> [--output FILE]` | The story as a markdown review |
-| `aat version` | Print the version |
+| `aat version` | Print the version, whether the installed skills match this aat's, and whether a newer release is out |
+| `aat install-skills [--force] [--dry-run] [--dir D]` | Put this aat's skills and agent in `~/.claude`, asking before replacing a copy that differs |
+| `aat self-update [--check] [--yes]` | Replace this aat with the latest release, then say whether the skills changed too |
 
 Text flags take literal text, `@path` to read a file, or `-` to read
 stdin. Output is JSON on stdout, apart from `export`, which writes markdown.

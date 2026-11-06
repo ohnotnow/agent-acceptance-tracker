@@ -16,7 +16,7 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 
 .PHONY: install install-bin install-claude test
 
-install: install-bin install-claude
+install: install-claude
 
 # Build to a temporary file and move it into place: on macOS, a binary
 # overwritten in place with cp is killed when it next runs.
@@ -27,12 +27,10 @@ install-bin:
 	mv "$(BINDIR)/.aat.new" "$(BINDIR)/aat"
 	@echo "installed $(BINDIR)/aat ($(VERSION))"
 
-install-claude:
-	mkdir -p "$(CLAUDE_DIR)/skills/aat" "$(CLAUDE_DIR)/skills/aat-writing" "$(CLAUDE_DIR)/agents"
-	cp claude/skills/aat/SKILL.md "$(CLAUDE_DIR)/skills/aat/SKILL.md"
-	cp claude/skills/aat-writing/SKILL.md "$(CLAUDE_DIR)/skills/aat-writing/SKILL.md"
-	cp claude/agents/aat-critic.md "$(CLAUDE_DIR)/agents/aat-critic.md"
-	@echo "installed the aat skills and the aat-critic agent in $(CLAUDE_DIR)"
+# The skills and agent are built into the binary; it installs them, asking
+# before it replaces a copy that differs ([y/N/d], d shows the diff).
+install-claude: install-bin
+	"$(BINDIR)/aat" install-skills --dir "$(CLAUDE_DIR)"
 
 test:
 	go test ./...
