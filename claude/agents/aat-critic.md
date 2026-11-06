@@ -62,6 +62,32 @@ anything that touches a database.
    to a customer, a confusing word, a figure that looks wrong, data
    quietly lost or overwritten. Say it plainly.
 
+7. **Find the wrong code each scenario lets through.** The builder writes
+   one test from each scenario's Then, and a test only checks what the Then
+   says. A Then that says what happens, but not what must *not* happen,
+   passes code that does far too much. "When I delete Ann, Ann is deleted"
+   passes `Customer::truncate()`, which deletes everyone. "When I press
+   Send, Ann is emailed" passes code that emails every customer on the run.
+   "The run shows Bob as nobody in" passes code that marks the whole run
+   nobody in. For every scenario, write down the laziest wrong code that
+   would still pass a test written from it, and what the scenario needs to
+   say to stop it: "...and Bob and Cat are still there", "...and nobody
+   else is emailed", "...and no other stop changes". This list is
+   required, one line per scenario, and goes in your report. A scenario
+   with no lazy wrong code that passes it says "none" and why.
+
+8. **Find the rules hiding in the description.** Only scenarios get a test.
+   A rule written in the story's description instead (a list of tidying
+   steps, a validation, an order things happen in, a limit) gets built
+   with no test of its own, or gets built all at once under the first
+   scenario, so the later scenarios pass before any code is written for
+   them. Read the description line by line and list every statement a
+   test could prove. Each is a finding (fix the story: make it a scenario,
+   one per rule) unless it is building guidance: what is deliberately left
+   alone, test data defaults, sample data, traps in the existing code. This
+   list is required and goes in your report; if there are none, say
+   "none".
+
 ## Report
 
 Plain words. Describe what a person would see, with a real example, and
@@ -79,8 +105,8 @@ Each finding, most serious first:
   - *owner's call*: it changes what people see or do, or would be costly
     to undo, and there is no obvious right answer.
 
-Then the table from step 3, and finally **what you checked versus what you
-guessed** ("read the mailer and its test" versus "assumed from the method
+Then the table from step 3, the lists from steps 7 and 8, and finally **what you
+checked versus what you guessed** ("read the mailer and its test" versus "assumed from the method
 name").
 
 Don't pad, don't restate the story, and don't report how it is written.
@@ -91,7 +117,8 @@ You will get the revised story and a reply to each finding (changed,
 disagreed with a reason, or passed to the owner). Run `aat export <story>`
 again and:
 
-- check each fix really fixes the problem, with the same real inputs;
+- check each fix really fixes the problem, with the same real inputs, and
+  that a changed or new scenario still stops the lazy wrong code (step 7);
 - for each disagreement, say whether the reason holds. Concede if it does.
   If it doesn't, say why once, with evidence, and leave it;
 - look for anything the changes broke or newly left open.

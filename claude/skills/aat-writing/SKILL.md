@@ -197,6 +197,13 @@ and stay in the lasting record, so:
   someone is turned away from, a link that can be tapped, a length limit,
   a label. If it is only in the description, the builder can miss it and
   the story still finishes all green.
+- **A rulebook in the description is a scenario you haven't written.** Any
+  rule a test could prove (a tidying step, a validation, the order steps
+  run in) is a scenario, one per rule, so each gets its own failing test.
+  In one build, seven import rules lived in the description: the first
+  scenario's code built them all, ten of fifteen scenarios passed before
+  any code was written for them, and three rules had no test until the
+  review. The critic lists any it finds.
 - **The description holds building guidance**: what is deliberately left
   alone, the docs in scope (README, technical overview), test data
   defaults (a factory default that changes can silently change what old
