@@ -30,11 +30,15 @@ func publish(ctx context.Context, store *Store, args []string, dir string) (any,
 	fs := newFlags("publish")
 	featureFlag := fs.String("feature", "", "publish only this feature")
 	dirFlag := fs.String("dir", "", "where to write the files")
+	yamlFlag := fs.Bool("yaml", false, "write everything aat holds about each feature as YAML, for aat import")
 	if err := parseFlags(fs, args); err != nil {
 		return nil, err
 	}
 	root := projectRoot(dir)
 	outDir := filepath.Join(root, "features")
+	if *yamlFlag {
+		outDir = filepath.Join(outDir, "yaml")
+	}
 	if *dirFlag != "" {
 		outDir = *dirFlag
 		if !filepath.IsAbs(outDir) {
@@ -57,13 +61,29 @@ func publish(ctx context.Context, store *Store, args []string, dir string) (any,
 
 	type file struct {
 		path, text, featureID string
-		scenarios             int
+		count                 int // scenarios in a .feature file, stories in a YAML one
 	}
 	var files []file
 	for _, id := range ids {
 		f, err := store.GetFeature(ctx, id)
 		if err != nil {
 			return nil, err
+		}
+		if *yamlFlag {
+			text, stories, err := renderShared(ctx, store, id)
+			if err != nil {
+				return nil, err
+			}
+			path := filepath.Join(outDir, strings.TrimSuffix(names[id], ".feature")+".yaml")
+			marker := sharedBy(f.ID)
+			if err := mayReplace(path, root, "feature "+f.ID, func(content string) bool {
+				first, _, _ := strings.Cut(content, "\n")
+				return first == marker
+			}); err != nil {
+				return nil, err
+			}
+			files = append(files, file{path, text, f.ID, stories})
+			continue
 		}
 		scs, err := store.CurrentScenarios(ctx, id)
 		if err != nil {
@@ -92,7 +112,14 @@ func publish(ctx context.Context, store *Store, args []string, dir string) (any,
 		if err := os.WriteFile(f.path, []byte(f.text), 0o644); err != nil {
 			return nil, err
 		}
-		written = append(written, map[string]any{"path": displayPath(root, f.path), "feature": f.featureID, "scenarios": f.scenarios})
+		count := "scenarios"
+		if *yamlFlag {
+			count = "stories"
+		}
+		written = append(written, map[string]any{"path": displayPath(root, f.path), "feature": f.featureID, count: f.count})
+	}
+	if *yamlFlag {
+		return map[string]any{"files": written, "check": shareCheck}, nil
 	}
 	return map[string]any{"files": written, "check": publishCheck}, nil
 }

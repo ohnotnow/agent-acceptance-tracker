@@ -199,6 +199,15 @@ var migrations = []migration{
 		_, err := tx.ExecContext(ctx, `ALTER TABLE scenarios ADD COLUMN handed_out_at TEXT;`)
 		return err
 	}},
+	{10, "a deleted draft scenario leaves a marker, so an import doesn't bring it back", func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			CREATE TABLE deleted_scenarios (
+				id         TEXT PRIMARY KEY,
+				story_id   TEXT NOT NULL REFERENCES stories(id),
+				deleted_at TEXT NOT NULL
+			);`)
+		return err
+	}},
 }
 
 func OpenStore(ctx context.Context, path string) (*Store, error) {

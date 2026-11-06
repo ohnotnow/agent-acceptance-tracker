@@ -360,6 +360,8 @@ nothing.
 | `aat question correct <question> (--round N \| --resolve-note) --body B --reason R` | Correct a recorded answer or note, visibly |
 | `aat export <story> [--output FILE]` | The story as a markdown review |
 | `aat publish [--feature F] [--dir D]` | Write features as `.feature` files for Gherkin tools |
+| `aat publish --yaml [--feature F]` | Write everything about each feature to `features/yaml/`, for another developer to `aat import` |
+| `aat import <file>...` | Merge a colleague's YAML file; on a clash it writes nothing and lists the records |
 
 Text flags take literal text, `@path` to read a file, or `-` to read stdin.
 Output is JSON on stdout; errors go to stderr as

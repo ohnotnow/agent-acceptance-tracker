@@ -74,6 +74,11 @@ const usage = `usage: aat [--db path] <command> [flags]
                                                 and with a test it arrives closed
   publish [--feature F] [--dir D]               write each feature as a .feature file for Gherkin
                                                 tools (default dir: features/ at the project root)
+  publish --yaml [--feature F] [--dir D]        write everything aat holds about each feature as YAML,
+                                                for another developer to import (default dir:
+                                                features/yaml/)
+  import <file>...                              merge YAML files from publish --yaml into this
+                                                database; stops, writing nothing, on a clash
   export <story> [--output FILE]                the story as a markdown review (not JSON): each
                                                 scenario with its test, each question with its answers
   version                                       print the version
@@ -209,6 +214,8 @@ func dispatch(ctx context.Context, args []string, dir string, stdin io.Reader) (
 		return publish(ctx, store, rest, dir)
 	case "export":
 		return export(ctx, store, rest, dir)
+	case "import":
+		return importFiles(ctx, store, rest, dir)
 	}
 	return nil, usageErr("unknown command %q\n%s", strings.Join(args, " "), usage)
 }

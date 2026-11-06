@@ -87,6 +87,18 @@ default), with an `@aat-<id>` tag on each scenario. It reads every file back
 with the same parser before writing anything, and never overwrites a file it
 didn't write itself.
 
+To hand a spec to another developer with its full record (the test behind
+each scenario, every question and answer, and what replaced what), run
+`aat publish --yaml`. It writes one YAML file per feature to `features/yaml/`.
+They run `aat import features/yaml/<feature>.yaml` to merge it into their own
+database. Import adds what they haven't got, and takes any change that only
+moves forward, such as a scenario closed with its test, an answer added, a
+question settled, a story accepted or a draft scenario deleted. Anything else that differs on the two
+sides, such as a draft scenario reworded on one side, is a clash. Import then
+writes nothing and lists the records involved. Someone reviewing an agreed
+story should raise their points as questions rather than edit it, so their
+copy and yours still merge.
+
 `aat` isn't a test runner. To run the published files as tests, bind them to
 your code with Cucumber, Behave or pytest-bdd as you normally would.
 
@@ -146,6 +158,8 @@ Copy `claude/skills/aat/` and `claude/skills/aat-writing/` into
 | `aat question correct <question> (--round N \| --resolve-note) --body T --reason R` | Correct a recorded answer or resolve note; the old text and the reason stay on the record |
 | `aat question resolve <question> --note N [--scenarios G [--replaces SC] [--test-file F --test NAME]]` | Settle a question, optionally adding scenarios; one new scenario can replace a current one, or arrive closed with its test |
 | `aat publish [--feature F] [--dir D]` | Write features as `.feature` files |
+| `aat publish --yaml [--feature F] [--dir D]` | Write everything about each feature as YAML, for `aat import` |
+| `aat import <file>...` | Merge YAML files from `publish --yaml`; on a clash, writes nothing |
 | `aat export <story> [--output FILE]` | The story as a markdown review |
 | `aat version` | Print the version |
 

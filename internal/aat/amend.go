@@ -109,6 +109,8 @@ func (s *Store) EditScenario(ctx context.Context, id string, p ParsedScenario) (
 // DeleteScenario removes a draft scenario that was never built. One that
 // replaces an earlier rule, or came out of the user's answer to a question,
 // is a link in the record, so it stays.
+// It leaves a marker, so importing a colleague's copy of the story
+// (ant aat-GShrC) doesn't bring the scenario back.
 func (s *Store) DeleteScenario(ctx context.Context, id string) error {
 	sc, err := s.GetScenario(ctx, id)
 	if err != nil {
@@ -130,7 +132,10 @@ func (s *Store) DeleteScenario(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM scenario_lines WHERE scenario_id = ?", id); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, "DELETE FROM scenarios WHERE id = ?", id)
+		if _, err := tx.ExecContext(ctx, "DELETE FROM scenarios WHERE id = ?", id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO deleted_scenarios (id, story_id, deleted_at) VALUES (?, ?, ?)", id, sc.StoryID, now())
 		return err
 	})
 }
