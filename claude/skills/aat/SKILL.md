@@ -100,7 +100,8 @@ Then loop:
    whole suite one last time and compare it with your baseline. If you
    noticed gaps along the way, raise them now as questions; they hold the
    story again until settled. Then tell the user it is ready for review,
-   with the suite's result. Start that message with anything the user has
+   with the suite's result. Start that message with the calls you made
+   yourself along the way, then anything the user has
    not yet seen working (a screen, an email), each with a link they can
    open, so it can't be lost further down.
    `aat export <story> --output .aat/<story>-review.md` writes a markdown
@@ -164,15 +165,26 @@ the edit.
 
 ## Questions
 
-Specs are rarely perfect. When you hit a genuine gap ("nobody said what
-happens with a duplicate name"), raise a question. Don't quietly handle the
-gap, and don't ignore it.
+Specs are rarely perfect. But being asked to approve things the builder
+could have decided wears the user out: in the fourth trial it added up to
+"I might as well have done this myself". So sort each gap first.
 
-Gaps include:
+**Make the ordinary calls yourself.** How something is built, checking
+input on the server (always), an awkward case with a sensible answer that
+fits the story, wording nobody will notice, a small change the story
+plainly implies: decide, build it, and keep a list. The list goes at the
+top of your message when the story is finished, so the user can still
+object.
 
-- A change you need to make that no scenario covers, such as a screen that
-  shows the new data. Ask before making it, rather than making it and
-  mentioning it afterwards.
+**Raise a question** when the answer changes what people using the app see
+or do, with no obvious right answer, or would be costly to undo, or goes
+against what the story says ("nobody said what happens with a duplicate
+name"). Don't quietly handle that kind of gap, and don't ignore it.
+
+Questions include:
+
+- A change that no scenario covers and the story doesn't plainly imply,
+  such as a new screen. Ask before making it.
 - Existing behaviour next to the story that now disagrees with it (the
   story says a blank import cell leaves an address alone, but the old code
   still wipes the name on a blank cell).
@@ -192,6 +204,12 @@ and say what you would suggest. Don't ask the user about aat's records
 A question can also come from the plan itself: `next` returns a question with
 a `position` when a check-in was planned at that point in the story ("show
 the user the export menu"). Treat it exactly like a question you raised.
+
+Before you show the user anything to look at (a check-in, or a change after
+a yes), look at it yourself first: take a screenshot and have a fresh agent,
+with no part in the build, compare it with the app's other screens and say
+what looks off. Fix what it finds. In the fourth trial the user found the
+driver's screen ugly twice, which a look first would have caught.
 
 Before you call something a bug, check the data behind it. A hint showing an
 unexpected number may be the real value, changed by the user while trying

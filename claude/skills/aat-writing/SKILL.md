@@ -1,6 +1,7 @@
 ---
 name: aat-writing
-description: Agree a piece of work with the user as Gherkin scenarios in aat (agent acceptance tracker), check it before anyone builds it, brief and coordinate a builder session, and review the finished story. Use when the user wants to plan or spec a change as an aat story, when you run the aat-preflight check or fold its findings in, when you brief a builder or relay its questions and check-ins to the user, or when you review and accept a finished story. You must use this skill if the user asks you to agree, write, tidy, coordinate or review an aat story. A session building a story uses the aat skill instead.
+description: Agree a piece of work with the user as Gherkin scenarios in aat (agent acceptance tracker), have it attacked before anyone builds it, brief and coordinate a builder session, and review the finished story. The user starts this with /aat-writing. A session building a story uses the aat skill instead.
+disable-model-invocation: true
 ---
 
 # aat-writing: agree a story, check it, coordinate the build
@@ -25,6 +26,35 @@ The spec is what the user agreed, and the build can only be as good as the
 words in it. Nearly every mid-build question in past trials could have been
 caught here, by reading the story against the code before anyone built it.
 
+The user's time is the scarce thing. In the fourth trial the agreeing
+session asked about a hundred questions one at a time, and the user said
+the whole stage added up to "I might as well have done this myself". The
+flow below exists to stop that: you and a critic agent do the arguing, and
+the user sees the result.
+
+## How a story gets agreed
+
+1. **Get the gist.** A short chat about what the user wants and why. Unless
+   they ask for a long back-and-forth, take the gist and go: don't
+   interview them.
+2. **Draft the whole story fast.** Read the code (below), then write the
+   story, its description, every scenario and any check-ins into aat in
+   one go. Make the ordinary calls yourself and write them in.
+3. **Have it attacked.** Run the `aat-critic` agent on it (below), argue
+   with its findings, fix the story, and run it once more.
+4. **Show the user one short list.** What the story now does, in a few
+   lines; then only the decisions that are genuinely theirs, each with your
+   position and one real example; then, in a line or two, what the critic
+   caught that you fixed. Apply their answers, then brief the builder.
+
+**What is the user's call:** something people using the app will see or
+do differently, with no obvious right answer; anything costly to undo;
+anything that contradicts what the user said. **What isn't:** how it is
+built, checking input on the server (always), obvious awkward cases with a
+sensible answer, and wording nobody will notice. Decide those, write them
+into the story, and let them show up in the summary, where the user can
+still object.
+
 ## Talking to the user
 
 - Plain words and real examples. The user may know nothing about BDD or
@@ -32,8 +62,8 @@ caught here, by reading the story against the code before anyone built it.
   changes in the app, with one example, never in BDD terms.
 - Give a position, not a menu: "I'd do X, because..., does that hold for
   you?"
-- One decision at a time when the design is genuinely open; batch only
-  the obvious fixes, and show the batch before applying it.
+- Short replies. No walls of text, no stream of links, no decisions the
+  user doesn't need to make.
 - Every noun needs a referent the user can see. They can't see the
   builder's messages, side agents' notes in other terminals, or your own
   reasoning.
@@ -170,28 +200,28 @@ order. When the second story builds on the first, read the first story's
 scenarios as the code that will exist, and say in the second's description
 what it relies on.
 
-## Checking the story before the build
+## Having the draft attacked
 
-Offer the user a pre-flight check before briefing a builder: the
-`aat-preflight` agent reads the story, its scenarios and the code they
-touch, and reports the gaps a builder would otherwise hit mid-build. Offer
-it; don't run it unasked. It earns its time on a story with several
-scenarios or one that changes existing behaviour, and is a nuisance on
-"make the button red".
+Run the `aat-critic` agent with the project directory and the story id.
+It knows nothing about how the story was agreed, which is the point: in
+the fourth trial a side agent with no knowledge of the process found most
+of the real problems, and a checklist-driven check that shared the
+agreeing session's view found almost none.
 
-Then:
+1. **Round one.** It tries real, messy inputs, follows every value to where
+   it ends up, and reports what goes wrong, each finding marked as a story
+   fix, a builder's call or the user's call.
+2. **Argue.** For each finding: fix the story (with the tidying commands
+   below), or disagree with a reason, or keep it for the user. Don't accept
+   a finding just because it was raised, and don't wave one off without
+   looking at its evidence.
+3. **Round two.** Send your replies to the same agent (continue it, so it
+   keeps its context). It checks your fixes and pushes back once where it
+   still disagrees. Then stop: two rounds, then the user.
 
-- Put its questions to the user in plain words, with your suggestion, one
-  at a time.
-- Show the user its obvious fixes as a list before applying them. Applying
-  a batch unseen once slipped a scenario past the user that they didn't
-  recognise.
-- Fold the answers in with the tidying commands below.
-- A quiet report doesn't prove the story is sound: you have been working
-  from the same checklist. Judge the checking by how many questions the
-  builder still has to raise mid-build.
-- Claude Code's side agents, and the user's own nose, catch things neither
-  you nor preflight did. Treat their notes as findings, not interruptions.
+Anything still disputed after round two goes on the user's list, with both
+views in a sentence each. Side agents' notes and the user's own nose still
+count: treat them as findings, not interruptions.
 
 ### Tidying a story before it is built
 
@@ -210,7 +240,7 @@ Until a step is built, it is a draft:
 - `aat story edit` changes the story's title or description until the
   story is accepted. If the builder has already started, tell it.
 
-Use these for pre-flight fixes, not `scenario replace`, which would leave a
+Use these for fixes before the build, not `scenario replace`, which would leave a
 "replaced" record of something never built. aat refuses them once `aat
 next` has handed a scenario to the builder (who may already have a test
 against its words), once it is closed, or once a question has an answer.
@@ -244,6 +274,9 @@ coordinator, and the user talks to you.
   point from what the user would see, with an example, never in the
   builder's words or code terms. If a point needs no decision, don't pass
   it on as one.
+- **Don't relay what the builder can decide.** If a builder's question is
+  an ordinary building call (see "What is the user's call" above), tell it
+  to make the call and note it, rather than passing it to the user.
 - **Read before relaying.** When the builder messages you about a
   question, read it (`aat question show`) and the story, and put it to
   the user with what is being built, what they are being asked, and your

@@ -68,11 +68,13 @@ job.
 
 Two skills in this repo explain the workflow to a Claude Code agent. The
 [aat-writing skill](claude/skills/aat-writing/SKILL.md) is for the session
-that agrees a story with you, checks it, briefs and coordinates the
-builder, and reviews the result. The [aat skill](claude/skills/aat/SKILL.md)
-is for the session that builds it. The [aat-preflight agent](claude/agents/aat-preflight.md)
-checks a freshly agreed story against the code before a builder starts, so
-gaps come up while you're still agreeing it rather than mid-build.
+that agrees a story with you, has it checked, briefs and coordinates the
+builder, and reviews the result. Start it yourself with `/aat-writing`. The
+[aat skill](claude/skills/aat/SKILL.md) is for the session that builds it.
+The [aat-critic agent](claude/agents/aat-critic.md) attacks a drafted story
+before you see it: it tries real inputs against the code and reports what
+would go wrong, and the agreeing session argues it out with it, so you get
+one short list of the decisions that are yours.
 
 ## Gherkin support
 
@@ -124,8 +126,8 @@ aat init
 `.aat/` to `.gitignore`.
 
 Copy `claude/skills/aat/` and `claude/skills/aat-writing/` into
-`~/.claude/skills/`, and `claude/agents/aat-preflight.md` into
-`~/.claude/agents/`. The preflight agent loads the aat-writing skill.
+`~/.claude/skills/`, and `claude/agents/aat-critic.md` into
+`~/.claude/agents/`.
 
 ## Commands
 
