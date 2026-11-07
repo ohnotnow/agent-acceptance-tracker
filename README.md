@@ -168,6 +168,55 @@ aat init
 `aat init` creates `.aat/aat.db` at the root of the git repository and adds
 `.aat/` to `.gitignore`.
 
+### OpenCode and Codex
+
+The skills use the shared `SKILL.md` format, so they work in other agents
+too. `--dir` is the root the whole `claude/` tree is copied under
+(`skills/` and `agents/`), so point it at the other tool's config folder.
+
+**OpenCode** already reads skills from `~/.claude/skills`, but looks for
+agents in its own folder:
+
+```bash
+aat install-skills --dir ~/.config/opencode
+```
+
+That puts the critic in `~/.config/opencode/agents/`. It also puts a second
+copy of the skills in `~/.config/opencode/skills/`, which OpenCode handles
+fine. The critic's frontmatter is written for Claude Code
+(`tools: Bash, Read, Glob, Grep`), so you may want to adjust it to
+OpenCode's own conventions.
+
+**Codex** reads skills from `~/.codex/skills`:
+
+```bash
+aat install-skills --dir ~/.codex
+```
+
+The skills work as they are. Codex agents are TOML files
+(`~/.codex/agents/<name>.toml`), not Markdown, so the critic lands in
+`~/.codex/agents/` as a `.md` file that Codex won't pick up until you
+convert it by hand:
+
+- `name` and `description` come straight from the frontmatter
+- the Markdown body (everything after the closing `---`) becomes
+  `developer_instructions`, in a `"""` string
+- drop `tools`
+
+So `aat-critic.md` becomes `~/.codex/agents/aat-critic.toml`:
+
+```toml
+name = "aat-critic"
+description = "Attacks a drafted aat story before it is shown to the user or built. Give it the project directory and the story id. It reads the story and the code, tries real, messy inputs, follows every value to where it ends up, and reports what would break or make the user wince, with evidence. Run it a second time (continue the same agent) with your replies to its findings, and it checks your fixes and pushes back where it still disagrees. Read-only."
+developer_instructions = """
+# Attack this story
+...
+"""
+```
+
+`aat version` only checks `~/.claude`, so it will report the skills as not
+installed if you only installed them somewhere else.
+
 ## Commands
 
 | Command | What it does |

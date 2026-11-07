@@ -118,7 +118,7 @@ type installConfig struct {
 
 func runInstallSkills(args []string, streams Streams) error {
 	flags := newFlags("install-skills")
-	dir := flags.String("dir", defaultClaudeDir(), "Claude Code config directory")
+	dir := flags.String("dir", defaultClaudeDir(), "config directory to install into, if not ~/.claude")
 	force := flags.Bool("force", false, "replace changed files without asking")
 	dryRun := flags.Bool("dry-run", false, "only say what would change")
 	if err := parseFlags(flags, args); err != nil {
